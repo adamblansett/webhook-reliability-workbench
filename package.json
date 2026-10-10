@@ -1,0 +1,71 @@
+{
+  "name": "webhook-reliability-workbench",
+  "version": "0.1.0",
+  "description": "Local-first developer tool for capturing, inspecting, validating, replaying, and testing webhook integrations",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "webhook-workbench": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run lint && npm run typecheck && npm run format:check && npm run test && npm run build",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "webhook",
+    "developer-tools",
+    "testing",
+    "hmac",
+    "signatures",
+    "replay",
+    "reliability",
+    "mock-receiver",
+    "retries"
+  ],
+  "author": "Adam Blansett <https://adamblansett.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamblansett/webhook-reliability-workbench.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adamblansett/webhook-reliability-workbench/issues"
+  },
+  "homepage": "https://github.com/adamblansett/webhook-reliability-workbench#readme",
+  "dependencies": {
+    "commander": "^13.1.0",
+    "picocolors": "^1.1.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.21.0",
+    "@types/node": "^22.13.5",
+    "eslint": "^9.21.0",
+    "prettier": "^3.5.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.1",
+    "vitest": "^5.0.3"
+  }
+}
