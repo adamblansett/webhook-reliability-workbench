@@ -370,9 +370,7 @@ export function assertIpAllowed(
  * Creates a custom DNS lookup function that validates resolved IP addresses
  * against SSRF policies at connection time, eliminating DNS rebinding gaps.
  */
-export function createSsrfLookup(
-  options: SsrValidationOptions = {},
-): net.LookupFunction {
+export function createSsrfLookup(options: SsrValidationOptions = {}): net.LookupFunction {
   return (
     hostname: string,
     lookupOpts: dns.LookupOptions,
@@ -413,43 +411,47 @@ export function createSsrfLookup(
     }
 
     // Resolve DNS and check every address
-    dns.lookup(cleanHost, { all: true }, (dnsErr: NodeJS.ErrnoException | null, addresses: dns.LookupAddress[]) => {
-      if (dnsErr) {
-        if (isLocalhostHost) {
-          try {
-            assertIpAllowed('127.0.0.1', hostname, options, true);
-            if (lookupOpts && lookupOpts.all) {
-              return callback(null, [{ address: '127.0.0.1', family: 4 }]);
+    dns.lookup(
+      cleanHost,
+      { all: true },
+      (dnsErr: NodeJS.ErrnoException | null, addresses: dns.LookupAddress[]) => {
+        if (dnsErr) {
+          if (isLocalhostHost) {
+            try {
+              assertIpAllowed('127.0.0.1', hostname, options, true);
+              if (lookupOpts && lookupOpts.all) {
+                return callback(null, [{ address: '127.0.0.1', family: 4 }]);
+              }
+              return callback(null, '127.0.0.1', 4);
+            } catch (valErr) {
+              return callback(valErr as unknown as NodeJS.ErrnoException, '');
             }
-            return callback(null, '127.0.0.1', 4);
-          } catch (valErr) {
-            return callback(valErr as unknown as NodeJS.ErrnoException, '');
           }
-        }
-        return callback(dnsErr, '');
-      }
-
-      if (!addresses || addresses.length === 0) {
-        const emptyErr = new SsrSecurityError(
-          `No IP addresses resolved for hostname "${cleanHost}".`,
-          'DNS_RESOLUTION_EMPTY',
-          hostname,
-        );
-        return callback(emptyErr as unknown as NodeJS.ErrnoException, '');
-      }
-
-      try {
-        for (const record of addresses) {
-          assertIpAllowed(record.address, hostname, options, isLocalhostHost);
+          return callback(dnsErr, '');
         }
 
-        if (lookupOpts && lookupOpts.all) {
-          return callback(null, addresses);
+        if (!addresses || addresses.length === 0) {
+          const emptyErr = new SsrSecurityError(
+            `No IP addresses resolved for hostname "${cleanHost}".`,
+            'DNS_RESOLUTION_EMPTY',
+            hostname,
+          );
+          return callback(emptyErr as unknown as NodeJS.ErrnoException, '');
         }
-        return callback(null, addresses[0]!.address, addresses[0]!.family);
-      } catch (valErr) {
-        return callback(valErr as unknown as NodeJS.ErrnoException, '');
-      }
-    });
+
+        try {
+          for (const record of addresses) {
+            assertIpAllowed(record.address, hostname, options, isLocalhostHost);
+          }
+
+          if (lookupOpts && lookupOpts.all) {
+            return callback(null, addresses);
+          }
+          return callback(null, addresses[0]!.address, addresses[0]!.family);
+        } catch (valErr) {
+          return callback(valErr as unknown as NodeJS.ErrnoException, '');
+        }
+      },
+    );
   };
 }

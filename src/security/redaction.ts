@@ -190,7 +190,7 @@ export function redactEventForDisplay<
   return {
     ...event,
     headers: redactHeaders(event.headers),
-    query: event.query ? (redactQueryParams(event.query) as any) : event.query,
+    query: event.query ? (redactQueryParams(event.query) as T['query']) : event.query,
     body: event.body ? redactPayload(event.body) : null,
     rawBody: redactString(event.rawBody),
     replays: event.replays

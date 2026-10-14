@@ -1,11 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import os from 'node:os';
 import {
   validateDestinationUrl,
   normalizeIp,
-  createSsrfLookup,
   SsrSecurityError,
 } from '../src/security/ssrf.js';
 import {
@@ -18,11 +14,7 @@ import {
   isSensitiveFieldKey,
   REDACTED_PLACEHOLDER,
 } from '../src/security/redaction.js';
-import {
-  resolveSafePath,
-  assertFileWriteSafety,
-  PathSecurityError,
-} from '../src/security/path.js';
+import { resolveSafePath, PathSecurityError } from '../src/security/path.js';
 
 describe('Security Safeguards', () => {
   describe('SSRF Protection and Destination Validation', () => {
@@ -204,6 +196,20 @@ describe('Security Safeguards', () => {
       const redacted = redactString(raw);
       expect(redacted).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
       expect(redacted).toContain(REDACTED_PLACEHOLDER);
+    });
+
+    it('redacts sensitive query parameters', () => {
+      const query = {
+        page: '1',
+        token: 'secret_token_123',
+        api_key: 'key_xyz',
+        sort: 'desc',
+      };
+      const redacted = redactQueryParams(query);
+      expect(redacted.page).toBe('1');
+      expect(redacted.token).toBe(REDACTED_PLACEHOLDER);
+      expect(redacted.api_key).toBe(REDACTED_PLACEHOLDER);
+      expect(redacted.sort).toBe('desc');
     });
 
     it('redactEventForDisplay creates a sanitized clone without mutating the original event', () => {

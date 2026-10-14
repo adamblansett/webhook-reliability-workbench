@@ -229,12 +229,15 @@ export async function replayWebhookEvent(
       req.on('error', (err) => {
         resolve({
           statusCode: 0,
-          statusText: err instanceof SsrSecurityError ? 'Security Error' : 'Network Error',
+          statusText:
+            err instanceof SsrSecurityError ? 'Security Error' : 'Network Error',
           resHeaders: {},
           responseBody: '',
           isTruncated: false,
           error:
-            err instanceof SsrSecurityError ? err.message : `Network failure: ${err.message}`,
+            err instanceof SsrSecurityError
+              ? err.message
+              : `Network failure: ${err.message}`,
         });
       });
 
