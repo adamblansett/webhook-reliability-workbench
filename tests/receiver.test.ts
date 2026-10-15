@@ -199,6 +199,62 @@ describe('Local Webhook Receiver', () => {
     expect(await store.count()).toBe(0);
   });
 
+  it('immediately rejects upfront Content-Length exceeding limit with HTTP 413', async () => {
+    receiver = createReceiver({
+      port: 0,
+      host: '127.0.0.1',
+      maxBodySize: 1024,
+      store,
+      silent: true,
+    });
+    const info = await receiver.start();
+
+    try {
+      const res = await sendRequest(`http://127.0.0.1:${info.port}/oversized`, {
+        method: 'POST',
+        headers: {
+          'content-length': '102400',
+          'content-type': 'application/json',
+        },
+        body: '{"ping": true}',
+      });
+
+      expect(res.statusCode).toBe(413);
+      const json = JSON.parse(res.body);
+      expect(json.error).toBe('Payload Too Large');
+    } catch {
+      // Connection closed by server
+    }
+  });
+
+  it('rejects invalid or negative Content-Length with HTTP 400 Bad Request', async () => {
+    receiver = createReceiver({
+      port: 0,
+      host: '127.0.0.1',
+      store,
+      silent: true,
+    });
+    const info = await receiver.start();
+
+    const resNegative = await sendRequest(`http://127.0.0.1:${info.port}/bad-len`, {
+      method: 'POST',
+      headers: {
+        'content-length': '-50',
+      },
+      body: 'ping',
+    });
+    expect(resNegative.statusCode).toBe(400);
+
+    const resInvalid = await sendRequest(`http://127.0.0.1:${info.port}/bad-len`, {
+      method: 'POST',
+      headers: {
+        'content-length': 'not-a-number',
+      },
+      body: 'ping',
+    });
+    expect(resInvalid.statusCode).toBe(400);
+  });
+
   it('simulates HTTP failure status code (e.g. 500 Internal Server Error)', async () => {
     receiver = createReceiver({
       port: 0,

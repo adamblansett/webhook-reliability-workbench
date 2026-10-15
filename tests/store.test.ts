@@ -190,5 +190,51 @@ describe('Event Store', () => {
       expect(await store.list()).toEqual([]);
       expect(await store.get('any')).toBeNull();
     });
+
+    it('backs up corrupted JSON file to events.json.corrupted.<timestamp> and recovers gracefully', async () => {
+      const filePath = path.join(tempDir, 'events.json');
+      const corruptData = '{ "invalid_json": true, incomplete...';
+      await fs.writeFile(filePath, corruptData, 'utf8');
+
+      const store = new FileEventStore(filePath);
+      const list = await store.list();
+      expect(list).toEqual([]);
+
+      // Check that a corrupted backup file was created
+      const dirFiles = await fs.readdir(tempDir);
+      const corruptedBackup = dirFiles.find((f) =>
+        f.startsWith('events.json.corrupted.'),
+      );
+      expect(corruptedBackup).toBeDefined();
+
+      const backupContent = await fs.readFile(
+        path.join(tempDir, corruptedBackup!),
+        'utf8',
+      );
+      expect(backupContent).toBe(corruptData);
+
+      // Subsequent saves work cleanly
+      const newEvent = createMockEvent('evt_new');
+      await store.save(newEvent);
+      expect(await store.count()).toBe(1);
+    });
+
+    it('enforces restrictive file and directory permissions (0o600 / 0o700)', async () => {
+      const nestedDir = path.join(tempDir, 'secure-store');
+      const filePath = path.join(nestedDir, 'events.json');
+      const store = new FileEventStore(filePath);
+
+      await store.save(createMockEvent());
+
+      const dirStat = await fs.stat(nestedDir);
+      // Check POSIX directory permissions (0o700)
+      if (process.platform !== 'win32') {
+        expect(dirStat.mode & 0o777).toBe(0o700);
+
+        const fileStat = await fs.stat(filePath);
+        // Check POSIX file permissions (0o600)
+        expect(fileStat.mode & 0o777).toBe(0o600);
+      }
+    });
   });
 });

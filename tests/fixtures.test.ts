@@ -57,9 +57,12 @@ describe('Payload Fixtures Manager', () => {
 
     expect(savedPath).toBe(outputPath);
 
-    // File exists
+    // File exists with restrictive permissions (0o600)
     const stat = await fs.stat(outputPath);
     expect(stat.isFile()).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(stat.mode & 0o777).toBe(0o600);
+    }
 
     // Validate exported file
     const validation = await validateFixtureFile(outputPath);

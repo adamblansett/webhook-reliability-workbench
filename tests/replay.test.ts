@@ -255,4 +255,92 @@ describe('Webhook Replay Engine', () => {
     expect(result.success).toBe(true);
     expect(result.responseBodyPreview).toContain('Truncated: exceeded 1024 bytes');
   });
+
+  it('blocks redirects to SSRF-restricted targets during replay', async () => {
+    responseHandler = (_req, res) => {
+      res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data/' });
+      res.end();
+    };
+
+    const event = createSampleEvent();
+    await expect(
+      replayWebhookEvent(
+        event,
+        {
+          url: `http://127.0.0.1:${targetPort}/redirect-to-metadata`,
+          allowLoopback: true,
+          followRedirects: true,
+        },
+        store,
+      ),
+    ).rejects.toThrowError(SsrSecurityError);
+  });
+
+  it('strips authorization and sensitive headers when following redirects across origins', async () => {
+    let secondServer: http.Server | null = null;
+    let secondPort = 0;
+    const secondReceived: Array<{ headers: http.IncomingHttpHeaders }> = [];
+
+    try {
+      secondServer = http.createServer((req, res) => {
+        secondReceived.push({ headers: req.headers });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+      await new Promise<void>((resolve) => {
+        secondServer!.listen(0, '127.0.0.1', () => {
+          secondPort = (secondServer!.address() as { port: number }).port;
+          resolve();
+        });
+      });
+
+      responseHandler = (_req, res) => {
+        res.writeHead(302, { Location: `http://127.0.0.1:${secondPort}/destination` });
+        res.end();
+      };
+
+      const event = createSampleEvent();
+      const result = await replayWebhookEvent(
+        event,
+        {
+          url: `http://127.0.0.1:${targetPort}/redirect-cross-origin`,
+          allowLoopback: true,
+          keepAuth: true,
+          followRedirects: true,
+        },
+        store,
+      );
+
+      expect(result.success).toBe(true);
+      expect(secondReceived.length).toBe(1);
+      expect(secondReceived[0]!.headers['authorization']).toBeUndefined();
+    } finally {
+      if (secondServer) {
+        await new Promise<void>((resolve) => secondServer!.close(() => resolve()));
+      }
+    }
+  });
+
+  it('bounds redirect loops and halts when maxRedirects is reached', async () => {
+    responseHandler = (_req, res) => {
+      res.writeHead(302, { Location: `http://127.0.0.1:${targetPort}/loop` });
+      res.end();
+    };
+
+    const event = createSampleEvent();
+    const result = await replayWebhookEvent(
+      event,
+      {
+        url: `http://127.0.0.1:${targetPort}/loop`,
+        allowLoopback: true,
+        followRedirects: true,
+        maxRedirects: 2,
+      },
+      store,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.statusText).toBe('Too Many Redirects');
+    expect(result.error).toContain('Exceeded maximum redirect limit');
+  });
 });

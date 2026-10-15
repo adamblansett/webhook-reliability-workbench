@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 import {
   validateDestinationUrl,
   normalizeIp,
+  createSsrfLookup,
   SsrSecurityError,
 } from '../src/security/ssrf.js';
 import {
@@ -14,7 +18,11 @@ import {
   isSensitiveFieldKey,
   REDACTED_PLACEHOLDER,
 } from '../src/security/redaction.js';
-import { resolveSafePath, PathSecurityError } from '../src/security/path.js';
+import {
+  resolveSafePath,
+  assertFileWriteSafety,
+  PathSecurityError,
+} from '../src/security/path.js';
 
 describe('Security Safeguards', () => {
   describe('SSRF Protection and Destination Validation', () => {
@@ -122,9 +130,56 @@ describe('Security Safeguards', () => {
       ).rejects.toThrowError(SsrSecurityError);
     });
 
-    it('normalizes IPv4-mapped IPv6 addresses', () => {
+    it('normalizes IPv4-mapped IPv6 addresses including hex-encoded and bracketed forms', () => {
       expect(normalizeIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
       expect(normalizeIp('::ffff:192.168.1.1')).toBe('192.168.1.1');
+      expect(normalizeIp('[::1]')).toBe('::1');
+      expect(normalizeIp('::ffff:7f00:1')).toBe('127.0.0.1');
+      expect(normalizeIp('::ffff:a9fe:a9fe')).toBe('169.254.169.254');
+      expect(normalizeIp('::ffff:a00:1')).toBe('10.0.0.1');
+      expect(normalizeIp('::ffff:c0a8:101')).toBe('192.168.1.1');
+      expect(normalizeIp('::ffff:ac10:1')).toBe('172.16.0.1');
+    });
+
+    it('ensures allowLoopback does NOT permit private network IPs or metadata', async () => {
+      await expect(
+        validateDestinationUrl('http://10.0.0.1/webhook', { allowLoopback: true }),
+      ).rejects.toThrowError(SsrSecurityError);
+
+      await expect(
+        validateDestinationUrl('http://192.168.1.100/webhook', { allowLoopback: true }),
+      ).rejects.toThrowError(SsrSecurityError);
+
+      await expect(
+        validateDestinationUrl('http://169.254.169.254/webhook', { allowLoopback: true }),
+      ).rejects.toThrowError(SsrSecurityError);
+    });
+
+    it('ensures allowPrivate does NOT permit loopback destinations', async () => {
+      await expect(
+        validateDestinationUrl('http://127.0.0.1:8080/webhook', { allowPrivate: true }),
+      ).rejects.toThrowError(SsrSecurityError);
+
+      await expect(
+        validateDestinationUrl('http://localhost:3000/webhook', { allowPrivate: true }),
+      ).rejects.toThrowError(SsrSecurityError);
+    });
+
+    it('createSsrfLookup blocks metadata hostnames and blocked IPs at connect time', () => {
+      const lookup = createSsrfLookup({ allowLoopback: false });
+      let errResult: SsrSecurityError | null = null;
+      lookup('metadata.google.internal', {}, (err) => {
+        errResult = err as unknown as SsrSecurityError;
+      });
+      expect(errResult).not.toBeNull();
+      expect(errResult!.reason).toBe('METADATA_HOSTNAME_BLOCKED');
+
+      let loopbackErr: SsrSecurityError | null = null;
+      lookup('127.0.0.1', {}, (err) => {
+        loopbackErr = err as unknown as SsrSecurityError;
+      });
+      expect(loopbackErr).not.toBeNull();
+      expect(loopbackErr!.reason).toBe('LOOPBACK_BLOCKED');
     });
 
     it('allows destination matching allowedDestinations list', async () => {
@@ -249,6 +304,45 @@ describe('Security Safeguards', () => {
     it('rejects empty paths', () => {
       expect(() => resolveSafePath('')).toThrowError(PathSecurityError);
       expect(() => resolveSafePath('   ')).toThrowError(PathSecurityError);
+    });
+
+    it('rejects directory traversal when enforceWithinBase is true', () => {
+      expect(() =>
+        resolveSafePath('../../etc/passwd', '/app/workbench', true),
+      ).toThrowError(PathSecurityError);
+
+      try {
+        resolveSafePath('../secret.txt', '/app/workbench', true);
+      } catch (err: unknown) {
+        expect((err as PathSecurityError).reason).toBe('DIRECTORY_TRAVERSAL_DETECTED');
+      }
+    });
+
+    it('allows safe relative path within base directory when enforceWithinBase is true', () => {
+      const resolved = resolveSafePath('sub/file.json', '/app/workbench', true);
+      expect(resolved).toBe(path.resolve('/app/workbench', 'sub/file.json'));
+    });
+
+    it('assertFileWriteSafety rejects writing through symbolic links', async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'symlink-test-'));
+      try {
+        const realFile = path.join(tempDir, 'real.json');
+        await fs.writeFile(realFile, '{}', 'utf8');
+        const symlinkFile = path.join(tempDir, 'symlink.json');
+        await fs.symlink(realFile, symlinkFile);
+
+        await expect(assertFileWriteSafety(symlinkFile, true)).rejects.toThrowError(
+          PathSecurityError,
+        );
+
+        try {
+          await assertFileWriteSafety(symlinkFile, true);
+        } catch (err: unknown) {
+          expect((err as PathSecurityError).reason).toBe('SYMLINK_DETECTED');
+        }
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
     });
   });
 });

@@ -182,4 +182,82 @@ describe('HMAC Signature Verification', () => {
     expect(parsed3.timestamp).toBe(1600000000);
     expect(parsed3.signature).toBe('sigvalue');
   });
+
+  it('preserves base64 padding (= or ==) during parsing and verification', () => {
+    const parsed = parseSignatureHeader('sha256=SGVsbG8gV29ybGQ=');
+    expect(parsed.signature).toBe('SGVsbG8gV29ybGQ=');
+
+    const parsedDouble = parseSignatureHeader('sha256=SGVsbG8==');
+    expect(parsedDouble.signature).toBe('SGVsbG8==');
+
+    const b64Digest = computeHmacDigest(payload, secret, 'sha256', 'base64');
+    const result = verifySignature(
+      payload,
+      { secret, algorithm: 'sha256', encoding: 'base64' },
+      b64Digest,
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('enforces case-sensitivity for base64 digests and case-insensitivity for hex', () => {
+    // Hex is case-insensitive
+    const hexDigest = computeHmacDigest(payload, secret, 'sha256', 'hex');
+    expect(
+      verifySignature(payload, { secret, algorithm: 'sha256' }, hexDigest.toUpperCase())
+        .valid,
+    ).toBe(true);
+
+    // Base64 is case-sensitive
+    const b64Digest = computeHmacDigest(payload, secret, 'sha256', 'base64');
+    // Invert casing of first alphabetical character
+    const alteredB64 = b64Digest.replace(/[a-zA-Z]/, (c) =>
+      c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase(),
+    );
+    if (alteredB64 !== b64Digest) {
+      expect(
+        verifySignature(
+          payload,
+          { secret, algorithm: 'sha256', encoding: 'base64' },
+          alteredB64,
+        ).valid,
+      ).toBe(false);
+    }
+  });
+
+  it('supports multi-signature headers for seamless secret rotation', () => {
+    const oldSecret = 'previous-secret-key-1';
+    const newSecret = 'current-secret-key-2';
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signedPayload = `${timestamp}.${payload}`;
+    const oldDigest = computeHmacDigest(signedPayload, oldSecret, 'sha256');
+    const newDigest = computeHmacDigest(signedPayload, newSecret, 'sha256');
+
+    // Header containing both old and new signatures
+    const multiHeader = `t=${timestamp},v1=${oldDigest},v1=${newDigest}`;
+
+    // Valid with new secret
+    const resultWithNew = verifySignature(
+      payload,
+      { secret: newSecret, algorithm: 'sha256', toleranceSeconds: 300 },
+      multiHeader,
+    );
+    expect(resultWithNew.valid).toBe(true);
+
+    // Valid with old secret
+    const resultWithOld = verifySignature(
+      payload,
+      { secret: oldSecret, algorithm: 'sha256', toleranceSeconds: 300 },
+      multiHeader,
+    );
+    expect(resultWithOld.valid).toBe(true);
+
+    // Invalid with completely unrelated secret
+    const resultWithWrong = verifySignature(
+      payload,
+      { secret: 'unrelated-secret', algorithm: 'sha256', toleranceSeconds: 300 },
+      multiHeader,
+    );
+    expect(resultWithWrong.valid).toBe(false);
+  });
 });
