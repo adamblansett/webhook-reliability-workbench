@@ -343,6 +343,28 @@ Workbench resolves configuration in order of precedence:
 
 ---
 
+## ⚖️ Legal Disclaimer & Limitation of Liability
+
+### 1. "AS IS" and Express Warranty Disclaimer
+This software, documentation, receiver daemon, cryptographic signing utilities, and webhook simulation tools are provided on an **"AS IS"** and **"AS AVAILABLE"** basis, **WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND**, either express, implied, statutory, or otherwise. To the maximum extent permitted by applicable law, the author, copyright holders, and contributors expressly disclaim all warranties, including but not limited to implied warranties of merchantability, fitness for a particular purpose, title, quiet enjoyment, and non-infringement.
+
+### 2. Webhook Replay & Duplicate Financial Transaction Warning
+- **Side Effects and Financial Impact:** Webhooks commonly trigger downstream state mutations—including payment processing, charge refunds, order creation, inventory allocation, account provisioning, or transactional emails/SMS. Replaying webhooks against live production environments, staging environments connected to live gateways, or non-idempotent endpoints can cause **duplicate credit card charges, unauthorized refunds, duplicate shipments, or corrupted account state**.
+- **User Responsibility for Idempotency:** The user is solely responsible for ensuring that any target endpoint implements adequate idempotency controls, and that simulated or replayed events are routed exclusively to safe, authorized development environments.
+- The author and contributors shall not be liable for any financial losses, duplicate transactions, billing disputes, inventory discrepancies, or unintended customer communications resulting from replayed or simulated webhook events.
+
+### 3. Network Authorization & SSRF Prevention
+- Users must only send, forward, or replay webhooks to network endpoints and IP addresses they own or are explicitly authorized to test.
+- This workbench is designed for local development and integration testing; it is **NOT** a distributed, hardened, production-grade message broker (such as Apache Kafka, RabbitMQ, or AWS SQS) and must not be used as an enterprise message queue for mission-critical infrastructure.
+
+### 4. Limitation of Liability
+To the maximum extent permitted by applicable law, **IN NO EVENT SHALL THE AUTHOR, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL DAMAGES** (including, but not limited to, loss of use, data, revenue, profits, business, or goodwill; duplicate financial charges; inventory loss; downtime; or procurement of substitute goods or services), however caused and on any theory of liability, whether in contract, strict liability, tort (including negligence or otherwise), or statute, arising in any way out of the use, reproduction, modification, distribution, or reliance upon this software, even if advised of the possibility of such damages.
+
+### 5. Third-Party Trademarks & Non-Affiliation
+All product names, logos, brands, and registered trademarks mentioned within this project (including Stripe, GitHub, Shopify, Slack, Twilio, Node.js, and Vitest) are the property of their respective owners. Mention of these entities does not imply endorsement, sponsorship, or affiliation with the author.
+
+---
+
 ## License
 
 [MIT](LICENSE) © 2026 Adam Blansett
