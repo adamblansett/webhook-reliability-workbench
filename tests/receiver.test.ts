@@ -372,4 +372,197 @@ describe('Local Webhook Receiver', () => {
     });
     expect(wrongPathRes.statusCode).toBe(404);
   });
+
+  it('verifies signatures using provider presets (e.g. preset: stripe)', async () => {
+    const secret = 'whsec_stripe_test_secret';
+    receiver = createReceiver({
+      port: 0,
+      host: '127.0.0.1',
+      preset: 'stripe',
+      secret,
+      store,
+      silent: true,
+    });
+    const info = await receiver.start();
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const payload = JSON.stringify({ event: 'charge.succeeded', id: 'ch_123' });
+    const digest = computeHmacDigest(`${timestamp}.${payload}`, secret, 'sha256');
+
+    const res = await sendRequest(`http://127.0.0.1:${info.port}/webhooks`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'stripe-signature': `t=${timestamp},v1=${digest}`,
+      },
+      body: payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const event = (await store.list())[0]!;
+    expect(event.signature?.valid).toBe(true);
+    expect(event.signature?.algorithm).toBe('sha256');
+  });
+
+  it('serves embedded Web Inspector UI on /__workbench/ui', async () => {
+    receiver = createReceiver({
+      port: 0,
+      host: '127.0.0.1',
+      path: '/filtered-path',
+      store,
+      silent: true,
+    });
+    const info = await receiver.start();
+
+    const res = await sendRequest(`http://127.0.0.1:${info.port}/__workbench/ui`, {
+      method: 'GET',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    expect(res.body).toContain('Webhook Reliability Workbench');
+    expect(res.body).toContain('Live SSE Connected');
+  });
+
+  it('streams captured events over SSE on /__workbench/stream', async () => {
+    receiver = createReceiver({
+      port: 0,
+      host: '127.0.0.1',
+      store,
+      silent: true,
+    });
+    const info = await receiver.start();
+
+    let sseOutput = '';
+    const sseReq = http.request(
+      `http://127.0.0.1:${info.port}/__workbench/stream`,
+      { method: 'GET' },
+      (sseRes) => {
+        expect(sseRes.headers['content-type']).toContain('text/event-stream');
+        sseRes.on('data', (c) => (sseOutput += c.toString('utf8')));
+      },
+    );
+    sseReq.end();
+
+    // Wait for SSE handshake
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Post an event
+    await sendRequest(`http://127.0.0.1:${info.port}/event`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ping: 'pong' }),
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    sseReq.destroy();
+
+    expect(sseOutput).toContain(': connected');
+    expect(sseOutput).toContain('data:');
+    expect(sseOutput).toContain('ping');
+  });
+
+  it('transparently forwards captured events when forwardTo is configured', async () => {
+    const targetReceived: Array<{ body: string; headers: http.IncomingHttpHeaders }> = [];
+    const targetServer = http.createServer((req, res) => {
+      let b = '';
+      req.on('data', (c) => (b += c.toString('utf8')));
+      req.on('end', () => {
+        targetReceived.push({ body: b, headers: req.headers });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ forwarded: true }));
+      });
+    });
+
+    let targetPort = 0;
+    await new Promise<void>((resolve) => {
+      targetServer.listen(0, '127.0.0.1', () => {
+        targetPort = (targetServer.address() as { port: number }).port;
+        resolve();
+      });
+    });
+
+    try {
+      receiver = createReceiver({
+        port: 0,
+        host: '127.0.0.1',
+        forwardTo: `http://127.0.0.1:${targetPort}/target`,
+        forwardAllowLoopback: true,
+        store,
+        silent: true,
+      });
+      const info = await receiver.start();
+
+      const payload = JSON.stringify({ item: 'forwarded-webhook', amount: 100 });
+      await sendRequest(`http://127.0.0.1:${info.port}/hook`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: payload,
+      });
+
+      expect(targetReceived.length).toBe(1);
+      expect(targetReceived[0]!.body).toBe(payload);
+
+      const saved = (await store.list())[0]!;
+      expect(saved.forwardResult).toBeDefined();
+      expect(saved.forwardResult?.success).toBe(true);
+      expect(saved.forwardResult?.status).toBe(200);
+    } finally {
+      await new Promise<void>((r) => targetServer.close(() => r()));
+    }
+  });
+
+  it('triggers event replay via POST /__workbench/replay', async () => {
+    let targetHit = false;
+    const targetServer = http.createServer((_req, res) => {
+      targetHit = true;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    let targetPort = 0;
+    await new Promise<void>((r) => {
+      targetServer.listen(0, '127.0.0.1', () => {
+        targetPort = (targetServer.address() as { port: number }).port;
+        r();
+      });
+    });
+
+    try {
+      receiver = createReceiver({
+        port: 0,
+        host: '127.0.0.1',
+        store,
+        silent: true,
+      });
+      const info = await receiver.start();
+
+      // Send initial webhook
+      const initRes = await sendRequest(`http://127.0.0.1:${info.port}/init`, {
+        method: 'POST',
+        body: 'test-replay',
+      });
+      const eventId = initRes.headers['x-workbench-event-id'] as string;
+      expect(eventId).toBeDefined();
+
+      // Trigger replay via API
+      const replayRes = await sendRequest(
+        `http://127.0.0.1:${info.port}/__workbench/replay`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            eventId,
+            destination: `http://127.0.0.1:${targetPort}/replayed`,
+            allowLoopback: true,
+          }),
+        },
+      );
+
+      expect(replayRes.statusCode).toBe(200);
+      const replayData = JSON.parse(replayRes.body);
+      expect(replayData.success).toBe(true);
+      expect(targetHit).toBe(true);
+    } finally {
+      await new Promise<void>((r) => targetServer.close(() => r()));
+    }
+  });
 });

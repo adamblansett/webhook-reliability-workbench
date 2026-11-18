@@ -5,6 +5,7 @@ import os from 'node:os';
 import {
   InMemoryEventStore,
   FileEventStore,
+  SqliteEventStore,
   generateEventId,
 } from '../src/events/store.js';
 import type { WebhookEvent, ReplayRecord } from '../src/events/types.js';
@@ -235,6 +236,66 @@ describe('Event Store', () => {
         // Check POSIX file permissions (0o600)
         expect(fileStat.mode & 0o777).toBe(0o600);
       }
+    });
+  });
+
+  describe('SqliteEventStore', () => {
+    it('persists and retrieves events from SQLite database', async () => {
+      const dbPath = path.join(tempDir, 'events.sqlite');
+      const store = new SqliteEventStore(dbPath);
+      const event = createMockEvent('evt_sqlite_1');
+
+      await store.save(event);
+      const retrieved = await store.get(event.id);
+
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.id).toBe('evt_sqlite_1');
+      expect(retrieved?.body).toEqual({ orderId: 100 });
+      store.close();
+    });
+
+    it('enforces maximum event capacity with FIFO eviction in SQLite', async () => {
+      const dbPath = path.join(tempDir, 'capacity.sqlite');
+      const store = new SqliteEventStore(dbPath, 2);
+
+      await store.save(createMockEvent('evt_1'));
+      await store.save(createMockEvent('evt_2'));
+      await store.save(createMockEvent('evt_3'));
+
+      expect(await store.count()).toBe(2);
+      expect(await store.get('evt_1')).toBeNull();
+      expect(await store.get('evt_3')).not.toBeNull();
+      store.close();
+    });
+
+    it('records replay results and supports pagination', async () => {
+      const dbPath = path.join(tempDir, 'replay.sqlite');
+      const store = new SqliteEventStore(dbPath);
+      const event = createMockEvent('evt_with_replay');
+
+      await store.save(event);
+
+      const replay: ReplayRecord = {
+        id: 'rpl_sqlite_1',
+        timestamp: new Date().toISOString(),
+        destination: 'http://127.0.0.1:4000/hook',
+        status: 200,
+        statusText: 'OK',
+        durationMs: 15,
+        success: true,
+      };
+
+      const added = await store.addReplay(event.id, replay);
+      expect(added).toBe(true);
+
+      const reloaded = await store.get(event.id);
+      expect(reloaded?.replays.length).toBe(1);
+      expect(reloaded?.replays[0]?.id).toBe('rpl_sqlite_1');
+
+      // Clear
+      await store.clear();
+      expect(await store.count()).toBe(0);
+      store.close();
     });
   });
 });

@@ -7,6 +7,10 @@ import { createDefaultStore, generateEventId } from '../events/store.js';
 import { isLoopbackIp } from '../security/ssrf.js';
 import { LIMITS } from '../security/limits.js';
 import { verifySignature } from '../signatures/verifier.js';
+import { getProviderPreset } from '../signatures/presets.js';
+import { redactEventForDisplay } from '../security/redaction.js';
+import { replayWebhookEvent } from '../replay/engine.js';
+import { renderInspectorHtml } from './ui.js';
 
 export class ReceiverSecurityError extends Error {
   constructor(message: string) {
@@ -58,12 +62,23 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
   const store = options.store ?? createDefaultStore();
   let serverInfo: ReceiverServerInfo | null = null;
   let isShuttingDown = false;
+  const sseClients = new Set<http.ServerResponse>();
+
+  // Preset configuration
+  const preset = options.preset ? getProviderPreset(options.preset) : undefined;
+  const signatureHeader =
+    options.signatureHeader ?? preset?.signatureHeader ?? 'x-hub-signature-256';
+  const signaturePrefix = options.signaturePrefix ?? preset?.signaturePrefix;
+  const algorithm = options.algorithm ?? preset?.algorithm ?? 'sha256';
+  const encoding = preset?.encoding ?? 'hex';
+  const toleranceSeconds = preset?.toleranceSeconds;
 
   const server = http.createServer(async (req, res) => {
     const startTime = Date.now();
+    const reqUrl = new URL(req.url ?? '/', `http://${host}:${port}`);
 
     // Health check endpoint
-    if (req.method === 'GET' && req.url === '/__workbench/health') {
+    if (req.method === 'GET' && reqUrl.pathname === '/__workbench/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -75,8 +90,67 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
       return;
     }
 
+    // Server-Sent Events stream endpoint for live monitoring
+    if (req.method === 'GET' && reqUrl.pathname === '/__workbench/stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.write(': connected\n\n');
+      sseClients.add(res);
+
+      req.on('close', () => {
+        sseClients.delete(res);
+      });
+      return;
+    }
+
+    // Embedded Web Inspector UI
+    if (req.method === 'GET' && reqUrl.pathname === '/__workbench/ui') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderInspectorHtml());
+      return;
+    }
+
+    // Replay endpoint for UI or programmatic triggers
+    if (req.method === 'POST' && reqUrl.pathname === '/__workbench/replay') {
+      let bodyText = '';
+      req.on('data', (c) => (bodyText += c.toString('utf8')));
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(bodyText);
+          const event = await store.get(payload.eventId);
+          if (!event) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Event not found' }));
+            return;
+          }
+          const replayRes = await replayWebhookEvent(
+            event,
+            {
+              url: payload.destination,
+              allowLoopback: payload.allowLoopback ?? true,
+              allowPrivate: payload.allowPrivate ?? false,
+              keepAuth: payload.keepAuth ?? true,
+              keepSignatures: payload.keepSignatures ?? true,
+            },
+            store,
+          );
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(replayRes));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+      });
+      return;
+    }
+
     // Path filtering: if a specific path was configured (and isn't root '/'), reject other paths
-    const reqUrl = new URL(req.url ?? '/', `http://${host}:${port}`);
     if (webhookPath !== '/' && reqUrl.pathname !== webhookPath) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(
@@ -253,15 +327,27 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
     // Signature verification if secret configured
     let signatureResult = null;
     if (options.secret) {
-      const sigHeaderName = options.signatureHeader ?? 'x-hub-signature-256';
-      const sigValue = req.headers[sigHeaderName.toLowerCase()];
+      const sigValue = req.headers[signatureHeader.toLowerCase()];
+      const timestampHeaderName = preset?.timestampHeader;
+      const explicitTimestamp = timestampHeaderName
+        ? (req.headers[timestampHeaderName.toLowerCase()] as string | undefined)
+        : undefined;
+      const idHeaderName = preset?.idHeader;
+      const explicitId = idHeaderName
+        ? (req.headers[idHeaderName.toLowerCase()] as string | undefined)
+        : undefined;
+
       signatureResult = verifySignature(
         rawBuffer,
         {
           secret: options.secret,
-          headerName: sigHeaderName,
-          algorithm: options.algorithm ?? 'sha256',
-          prefix: options.signaturePrefix,
+          headerName: signatureHeader,
+          algorithm,
+          prefix: signaturePrefix,
+          encoding,
+          toleranceSeconds,
+          timestamp: explicitTimestamp,
+          messageId: explicitId,
         },
         sigValue,
       );
@@ -312,6 +398,61 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
         process.stderr.write(
           `[Workbench] Warning: Failed to persist event: ${String(saveErr)}\n`,
         );
+      }
+    }
+
+    // Broadcast captured event to SSE stream subscribers
+    if (sseClients.size > 0) {
+      const ssePayload = JSON.stringify(redactEventForDisplay(event));
+      for (const client of sseClients) {
+        try {
+          client.write(`data: ${ssePayload}\n\n`);
+        } catch {
+          sseClients.delete(client);
+        }
+      }
+    }
+
+    // Transparent proxy forwarding if configured
+    if (options.forwardTo) {
+      try {
+        const forwardResult = await replayWebhookEvent(
+          event,
+          {
+            url: options.forwardTo,
+            allowLoopback: options.forwardAllowLoopback ?? true,
+            allowPrivate: options.forwardAllowPrivate ?? false,
+            keepAuth: true,
+            keepSignatures: true,
+            timeoutMs: 10000,
+          },
+          store,
+        );
+        event.forwardResult = {
+          id: forwardResult.id,
+          timestamp: forwardResult.timestamp,
+          destination: forwardResult.destination,
+          status: forwardResult.status,
+          statusText: forwardResult.statusText,
+          durationMs: forwardResult.durationMs,
+          success: forwardResult.success,
+          error: forwardResult.error,
+          responseHeaders: forwardResult.responseHeaders,
+          responseBodyPreview: forwardResult.responseBodyPreview,
+        };
+        await store.save(event);
+
+        if (!options.silent) {
+          process.stdout.write(
+            `  ↳ [Forwarded] -> ${options.forwardTo} [${forwardResult.status} ${forwardResult.statusText}] (${forwardResult.durationMs}ms)\n`,
+          );
+        }
+      } catch (fwdErr) {
+        if (!options.silent) {
+          process.stderr.write(
+            `  ↳ [Forward Error] Failed to forward to ${options.forwardTo}: ${fwdErr instanceof Error ? fwdErr.message : String(fwdErr)}\n`,
+          );
+        }
       }
     }
 
@@ -392,6 +533,15 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
   const stop = async (): Promise<void> => {
     if (isShuttingDown) return;
     isShuttingDown = true;
+
+    for (const client of sseClients) {
+      try {
+        client.end();
+      } catch {
+        // Ignore
+      }
+    }
+    sseClients.clear();
 
     try {
       await fs.unlink(stateFilePath);

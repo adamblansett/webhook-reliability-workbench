@@ -1,4 +1,4 @@
-import type { SupportedHmacAlgorithm } from '../signatures/types.js';
+import type { SupportedSignatureAlgorithm } from '../signatures/types.js';
 import type { EventStore } from '../events/types.js';
 
 export interface ReceiverOptions {
@@ -22,14 +22,26 @@ export interface ReceiverOptions {
   /** Simulated custom response headers */
   responseHeaders?: Record<string, string>;
 
+  /** Optional provider preset name (e.g. 'stripe', 'github', 'shopify', 'slack', 'svix') */
+  preset?: string;
   /** Optional signing secret for automatic incoming signature verification */
   secret?: string;
-  /** Header name that contains the HMAC signature */
+  /** Header name that contains the signature */
   signatureHeader?: string;
-  /** Expected signature prefix (e.g. 'sha256=') */
+  /** Expected signature prefix (e.g. 'sha256=', 'v1,') */
   signaturePrefix?: string;
-  /** Signature HMAC algorithm */
-  algorithm?: SupportedHmacAlgorithm;
+  /** Signature algorithm */
+  algorithm?: SupportedSignatureAlgorithm;
+
+  /** Transparently forward incoming webhooks to a target destination URL */
+  forwardTo?: string;
+  /** Allow forwarding to loopback (127.0.0.1, localhost) */
+  forwardAllowLoopback?: boolean;
+  /** Allow forwarding to private IP networks (10.x, 192.168.x, 172.16.x) */
+  forwardAllowPrivate?: boolean;
+
+  /** Enable embedded Web UI inspector at /__workbench/ui */
+  enableUi?: boolean;
 
   /** EventStore instance to persist captured events */
   store?: EventStore;

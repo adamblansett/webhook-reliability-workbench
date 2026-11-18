@@ -7,6 +7,7 @@ import { createReplayCommand } from './commands/replay.js';
 import { createTestRetriesCommand } from './commands/test-retries.js';
 import { createFixturesCommand } from './commands/fixtures.js';
 import { createConfigCommand } from './commands/config.js';
+import { createTriggerCommand } from './commands/trigger.js';
 import { ExitCode } from '../config/exit-codes.js';
 
 export function createProgram(): Command {
@@ -24,6 +25,7 @@ export function createProgram(): Command {
   program.addCommand(createTestRetriesCommand());
   program.addCommand(createFixturesCommand());
   program.addCommand(createConfigCommand());
+  program.addCommand(createTriggerCommand());
 
   return program;
 }

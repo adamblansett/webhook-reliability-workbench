@@ -70,6 +70,9 @@ npm run format:check
 # Run Vitest test suite
 npm test
 
+# Run test suite with full v8 coverage report
+npm run test:coverage
+
 # Build production bundle in ./dist
 npm run build
 
@@ -89,18 +92,21 @@ webhook-workbench [options] [command]
 
 ### Commands
 
-| Command                     | Description                                                         |
-| :-------------------------- | :------------------------------------------------------------------ |
-| `listen`                    | Start the local webhook receiver HTTP server                        |
-| `events list`               | List captured webhook events in store                               |
-| `events show <eventId>`     | Inspect detailed metadata and payload of an event                   |
-| `events clear`              | Clear stored event history                                          |
-| `replay <eventId>`          | Replay a captured event to a destination URL                        |
-| `test-retries <eventId>`    | Test retry behavior and duplicate handling across multiple attempts |
-| `fixtures export <eventId>` | Export a captured event as a portable JSON fixture file             |
-| `fixtures validate <file>`  | Validate a JSON fixture file against the Workbench schema           |
-| `fixtures import <file>`    | Import a fixture file as a captured event in local store            |
-| `config show`               | View resolved configuration and runtime defaults                    |
+| Command                      | Description                                                         |
+| :--------------------------- | :------------------------------------------------------------------ |
+| `listen`                     | Start local receiver with optional proxy forwarding and web UI      |
+| `events list`                | List captured webhook events in store                               |
+| `events show <eventId>`      | Inspect detailed metadata and payload of an event                   |
+| `events diff <id1> <id2>`    | Compare two captured webhook events side-by-side                    |
+| `events tail`                | Stream live incoming webhook events via Server-Sent Events (SSE)    |
+| `events clear`               | Clear stored event history                                          |
+| `trigger <provider> <event>` | Generate and send synthetic provider webhooks or curl commands      |
+| `replay <eventId>`           | Replay a captured event to a destination URL                        |
+| `test-retries <eventId>`     | Test retry behavior and duplicate handling across multiple attempts |
+| `fixtures export <eventId>`  | Export a captured event as a portable JSON fixture file             |
+| `fixtures validate <file>`   | Validate a JSON fixture file against the Workbench schema           |
+| `fixtures import <file>`     | Import a fixture file as a captured event in local store            |
+| `config show`                | View resolved configuration and runtime defaults                    |
 
 ---
 
@@ -176,31 +182,137 @@ webhook-workbench events show evt_m1abc9_48fa --json
 
 ---
 
-### 2. HMAC Signature Verification
+### 2. Signature Verification & Provider Presets
 
-Verify HMAC signatures using SHA-256 or SHA-512 against the exact raw request bytes.
+Workbench supports HMAC (SHA-256, SHA-512, SHA-1), asymmetric Ed25519 digital signatures, and the emerging [Standard Webhooks](https://www.standardwebhooks.com/) specification.
+
+#### Using Built-In Provider Presets
+
+Instead of manually typing header names, prefixes, and algorithms, use `--preset`:
 
 ```bash
-# Start receiver with signature verification
+# Stripe (t=...,v1=... HMAC-SHA256)
+webhook-workbench listen --port 8787 --preset stripe --secret "whsec_..."
+
+# GitHub (x-hub-signature-256 sha256=... HMAC-SHA256)
+webhook-workbench listen --port 8787 --preset github --secret "github_secret"
+
+# Shopify (x-shopify-hmac-sha256 base64 HMAC-SHA256)
+webhook-workbench listen --port 8787 --preset shopify --secret "shopify_secret"
+
+# Slack (x-slack-signature v0=... with x-slack-request-timestamp)
+webhook-workbench listen --port 8787 --preset slack --secret "slack_secret"
+
+# Svix / Standard Webhooks (webhook-signature, webhook-timestamp, webhook-id)
+webhook-workbench listen --port 8787 --preset svix --secret "whsec_..."
+```
+
+#### Manual Signature Configuration & Ed25519
+
+You can also configure custom signature headers and algorithms:
+
+```bash
+# Custom HMAC-SHA256
 webhook-workbench listen \
   --port 8787 \
   --secret "whsec_test_secret_key" \
-  --signature-header "x-hub-signature-256" \
+  --signature-header "x-custom-signature" \
   --signature-prefix "sha256=" \
   --algorithm sha256
+
+# Asymmetric Ed25519 Public Key Verification
+webhook-workbench listen \
+  --port 8787 \
+  --secret "base64-or-spki-ed25519-public-key" \
+  --signature-header "x-signature-ed25519" \
+  --algorithm ed25519
 ```
 
 Supported formats:
 
 - **Prefix format**: `sha256=d3b07384...` (GitHub style)
-- **Timestamped multi-part**: `t=1614555555,v1=5257a869...` (Stripe style)
-- **Raw hex/base64 digests**: `d3b07384...`
+- **Timestamped multi-part**: `t=1614555555,v1=5257a869...` (Stripe, Standard Webhooks)
+- **Raw hex/base64 digests**: `d3b07384...` or `q8...=`
+- **Ed25519 asymmetric signatures**: validated using Node crypto `verify(null, payload, publicKey, sig)`
 
-Verification results are recorded with timing-safe comparison (`crypto.timingSafeEqual`) without exposing secret values.
+Verification results are recorded using constant-time comparisons (`crypto.timingSafeEqual`) without exposing secret values.
 
 ---
 
-### 3. Simulating Failures & Provider Retries
+### 3. Transparent Forwarding & Web Inspector UI
+
+Act as a transparent reverse proxy between external webhooks and your local development server:
+
+```bash
+webhook-workbench listen \
+  --port 8787 \
+  --forward-to http://127.0.0.1:3000/api/webhooks \
+  --forward-allow-loopback \
+  --ui
+```
+
+- **Transparent Proxy**: Requests delivered to port `8787` are captured in the store and forwarded immediately to your app server. The app's response status code, latency, and body are recorded on the event as `forwardResult`.
+- **Web Inspector Dashboard**: Access `http://127.0.0.1:8787/__workbench/ui` in your browser for a live, real-time dashboard of captured webhooks with one-click replaying and syntax highlighting.
+- **Server-Sent Events (SSE)**: Connect any custom tool or client to `GET /__workbench/stream` to receive incoming events in real time.
+
+---
+
+### 4. Synthetic Mock Generator & Triggering
+
+Test your application endpoints without needing live external provider accounts:
+
+```bash
+# List available provider templates
+webhook-workbench trigger --list
+
+# Send a synthetic Stripe payment_intent.succeeded webhook to your app
+webhook-workbench trigger stripe payment_intent.succeeded \
+  --url http://127.0.0.1:3000/api/webhooks \
+  --secret "whsec_test"
+
+# Output as a ready-to-run curl command
+webhook-workbench trigger github push \
+  --url http://127.0.0.1:3000/api/webhooks \
+  --secret "test_secret" \
+  --print-curl
+
+# Output synthetic JSON payload directly
+webhook-workbench trigger shopify orders/create --json
+```
+
+Supported mock templates:
+
+- **Stripe**: `payment_intent.succeeded`, `charge.refunded`, `customer.subscription.created`
+- **GitHub**: `push`, `pull_request`, `ping`
+- **Shopify**: `orders/create`, `products/update`
+- **Slack**: `app_mention`, `url_verification`
+- **Svix**: `user.created`, `invoice.paid`
+
+---
+
+### 5. Live Stream & Event Diffing
+
+#### Live CLI Stream
+
+Watch events arrive in real-time from your terminal:
+
+```bash
+webhook-workbench events tail --url http://127.0.0.1:8787
+```
+
+#### Event Diffing
+
+Compare payloads, headers, or metadata between two captured events (e.g. initial attempt vs retry):
+
+```bash
+webhook-workbench events diff evt_001 evt_002
+```
+
+Displays colorized, side-by-side or contextual diffs for header modifications, timestamps, and payload field mutations.
+
+---
+
+### 6. Simulating Failures & Provider Retries
 
 Simulate upstream failures to test how webhook dispatchers handle errors and backoff:
 
@@ -214,7 +326,7 @@ webhook-workbench listen --port 8787 --delay-ms 2500
 
 ---
 
-### 4. Replaying Captured Events
+### 7. Replaying Captured Events
 
 Replay captured events to local application servers during development:
 
@@ -234,7 +346,7 @@ webhook-workbench replay evt_m1abc9_48fa \
 
 ---
 
-### 5. Retry Testing & Duplicate Delivery
+### 8. Retry Testing & Duplicate Delivery
 
 Verify that your application endpoint correctly handles duplicated webhooks and enforces idempotency:
 
@@ -268,7 +380,7 @@ Attempt #3 (after 1000ms delay): Status 200 [SUCCESS] (12ms)
 
 ---
 
-### 6. Portable Payload Fixtures
+### 9. Portable Payload Fixtures
 
 Export captured events into version-controlled fixture files for regression testing:
 
@@ -285,6 +397,24 @@ webhook-workbench fixtures validate fixtures/order-created.json
 # Re-import fixture into event store
 webhook-workbench fixtures import fixtures/order-created.json
 ```
+
+---
+
+### 10. High-Performance SQLite Event Store
+
+By default, Workbench stores events in memory or a JSON file. For high-volume load testing, durability, and fast indexed lookups, Workbench includes a native SQLite backend:
+
+```bash
+# Use SQLite event storage
+webhook-workbench listen --store-type sqlite --store-file .workbench/events.sqlite
+```
+
+Features:
+
+- Backed by Node's built-in `node:sqlite` engine.
+- Indexed by event ID, timestamp, and insertion order.
+- Automatic FIFO capacity eviction when maximum event thresholds are reached.
+- Thread-safe persistence across concurrent listener and replay processes.
 
 ---
 
@@ -331,36 +461,40 @@ Workbench resolves configuration in order of precedence:
 
 ### Current Limitations
 
-- Supports HTTP/HTTPS replay (gRPC / WebSocket webhook transports not supported).
-- Multi-process event sharing relies on file-backed JSON store (`.workbench/events.json`).
+- Supports HTTP/HTTPS webhook deliveries and replays (gRPC webhook transports not supported).
+- Replays must be HTTP/HTTPS destinations.
 
 ### Roadmap
 
-- Real-time terminal dashboard / TUI mode
-- WebSocket streaming output of incoming events
-- OpenAPI schema validation against captured event bodies
-- Mock webhook generator for popular providers (Stripe, GitHub, Shopify)
+- OpenAPI & JSON Schema validation against captured event bodies
+- Full curses/Ink-based interactive terminal UI (TUI)
+- Out-of-band alerting (Slack, Discord notification when signature validation fails)
 
 ---
 
 ## ⚖️ Legal Disclaimer & Limitation of Liability
 
 ### 1. "AS IS" and Express Warranty Disclaimer
+
 This software, documentation, receiver daemon, cryptographic signing utilities, and webhook simulation tools are provided on an **"AS IS"** and **"AS AVAILABLE"** basis, **WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND**, either express, implied, statutory, or otherwise. To the maximum extent permitted by applicable law, the author, copyright holders, and contributors expressly disclaim all warranties, including but not limited to implied warranties of merchantability, fitness for a particular purpose, title, quiet enjoyment, and non-infringement.
 
 ### 2. Webhook Replay & Duplicate Financial Transaction Warning
+
 - **Side Effects and Financial Impact:** Webhooks commonly trigger downstream state mutations—including payment processing, charge refunds, order creation, inventory allocation, account provisioning, or transactional emails/SMS. Replaying webhooks against live production environments, staging environments connected to live gateways, or non-idempotent endpoints can cause **duplicate credit card charges, unauthorized refunds, duplicate shipments, or corrupted account state**.
 - **User Responsibility for Idempotency:** The user is solely responsible for ensuring that any target endpoint implements adequate idempotency controls, and that simulated or replayed events are routed exclusively to safe, authorized development environments.
 - The author and contributors shall not be liable for any financial losses, duplicate transactions, billing disputes, inventory discrepancies, or unintended customer communications resulting from replayed or simulated webhook events.
 
 ### 3. Network Authorization & SSRF Prevention
+
 - Users must only send, forward, or replay webhooks to network endpoints and IP addresses they own or are explicitly authorized to test.
 - This workbench is designed for local development and integration testing; it is **NOT** a distributed, hardened, production-grade message broker (such as Apache Kafka, RabbitMQ, or AWS SQS) and must not be used as an enterprise message queue for mission-critical infrastructure.
 
 ### 4. Limitation of Liability
+
 To the maximum extent permitted by applicable law, **IN NO EVENT SHALL THE AUTHOR, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL DAMAGES** (including, but not limited to, loss of use, data, revenue, profits, business, or goodwill; duplicate financial charges; inventory loss; downtime; or procurement of substitute goods or services), however caused and on any theory of liability, whether in contract, strict liability, tort (including negligence or otherwise), or statute, arising in any way out of the use, reproduction, modification, distribution, or reliance upon this software, even if advised of the possibility of such damages.
 
 ### 5. Third-Party Trademarks & Non-Affiliation
+
 All product names, logos, brands, and registered trademarks mentioned within this project (including Stripe, GitHub, Shopify, Slack, Twilio, Node.js, and Vitest) are the property of their respective owners. Mention of these entities does not imply endorsement, sponsorship, or affiliation with the author.
 
 ---

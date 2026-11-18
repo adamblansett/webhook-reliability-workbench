@@ -30,6 +30,7 @@ export interface WebhookEvent {
   durationMs: number;
   signature: SignatureVerificationResult | null;
   replays: ReplayRecord[];
+  forwardResult?: ReplayRecord | null;
 }
 
 export interface EventStore {

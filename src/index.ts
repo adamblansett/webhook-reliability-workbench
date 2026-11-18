@@ -10,23 +10,46 @@ export type { ReceiverOptions, ReceiverServerInfo } from './receiver/types.js';
 export {
   InMemoryEventStore,
   FileEventStore,
+  SqliteEventStore,
   createDefaultStore,
   generateEventId,
 } from './events/store.js';
 export type { WebhookEvent, EventStore, ReplayRecord } from './events/types.js';
 
-// Signatures
+// Signatures & Presets
 export {
   verifySignature,
   computeHmacDigest,
+  computeSignature,
   timingSafeCompare,
   parseSignatureHeader,
+  createEd25519PublicKey,
 } from './signatures/verifier.js';
+export {
+  getProviderPreset,
+  listProviderPresets,
+  PROVIDER_PRESETS,
+  type WebhookProviderPreset,
+} from './signatures/presets.js';
 export type {
   SignatureVerifyOptions,
   SignatureVerificationResult,
   SupportedHmacAlgorithm,
+  SupportedSignatureAlgorithm,
 } from './signatures/types.js';
+
+// Synthetic Webhook Generator
+export {
+  generateSyntheticWebhook,
+  listAvailableTemplates,
+  TEMPLATES,
+  type GeneratedWebhook,
+  type GenerateWebhookOptions,
+} from './testing/generator.js';
+
+// Diff & Inspection
+export { diffEvents } from './output/diff.js';
+export { renderInspectorHtml } from './receiver/ui.js';
 
 // Replay
 export { replayWebhookEvent } from './replay/engine.js';

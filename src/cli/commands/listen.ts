@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { createReceiver } from '../../receiver/server.js';
 import { createDefaultStore } from '../../events/store.js';
 import { ExitCode } from '../../config/exit-codes.js';
-import type { SupportedHmacAlgorithm } from '../../signatures/types.js';
+import type { SupportedSignatureAlgorithm } from '../../signatures/types.js';
 
 export function createListenCommand(): Command {
   const cmd = new Command('listen');
@@ -31,16 +31,38 @@ export function createListenCommand(): Command {
     )
     .option('--response-body <bodyString>', 'Custom response body payload')
     .option(
-      '--secret <signingSecret>',
-      'Shared HMAC secret for verifying incoming signatures',
+      '--preset <provider>',
+      'Use provider preset (stripe, github, shopify, slack, svix)',
     )
     .option(
-      '--signature-header <name>',
-      'Header name containing the HMAC signature',
-      'x-hub-signature-256',
+      '--secret <signingSecret>',
+      'Shared HMAC secret or public key for verifying incoming signatures',
     )
-    .option('--signature-prefix <prefix>', 'Expected signature prefix (e.g. "sha256=")')
-    .option('--algorithm <alg>', 'HMAC algorithm (sha256, sha512, sha1)', 'sha256')
+    .option('--signature-header <name>', 'Header name containing the HMAC signature')
+    .option(
+      '--signature-prefix <prefix>',
+      'Expected signature prefix (e.g. "sha256=", "v1,")',
+    )
+    .option(
+      '--algorithm <alg>',
+      'Signature algorithm (sha256, sha512, sha1, ed25519)',
+      'sha256',
+    )
+    .option(
+      '--forward-to <url>',
+      'Transparently proxy captured webhooks to target application URL',
+    )
+    .option('--forward-allow-loopback', 'Allow forwarding to loopback destinations', true)
+    .option(
+      '--forward-allow-private',
+      'Allow forwarding to private network destinations',
+      false,
+    )
+    .option(
+      '--ui',
+      'Enable embedded Web Inspector UI (accessible at /__workbench/ui)',
+      false,
+    )
     .option(
       '--max-body-size <bytes>',
       'Maximum request body size in bytes',
@@ -63,10 +85,15 @@ export function createListenCommand(): Command {
           responseStatus: opts.responseStatus,
           delayMs: opts.delayMs,
           responseBody: opts.responseBody,
+          preset: opts.preset,
           secret: opts.secret,
           signatureHeader: opts.signatureHeader,
           signaturePrefix: opts.signaturePrefix,
-          algorithm: opts.algorithm as SupportedHmacAlgorithm,
+          algorithm: opts.algorithm as SupportedSignatureAlgorithm,
+          forwardTo: opts.forwardTo,
+          forwardAllowLoopback: opts.forwardAllowLoopback,
+          forwardAllowPrivate: opts.forwardAllowPrivate,
+          enableUi: opts.ui,
           maxBodySize: opts.maxBodySize,
           store,
         });
@@ -80,7 +107,17 @@ export function createListenCommand(): Command {
         process.on('SIGINT', shutdown);
         process.on('SIGTERM', shutdown);
 
-        await receiver.start();
+        const info = await receiver.start();
+        if (opts.ui) {
+          process.stdout.write(
+            `[Workbench] Web Inspector UI available at http://${info.host}:${info.port}/__workbench/ui\n`,
+          );
+        }
+        if (opts.forwardTo) {
+          process.stdout.write(
+            `[Workbench] Proxy mode enabled: Forwarding webhooks to ${opts.forwardTo}\n`,
+          );
+        }
       } catch (err) {
         process.stderr.write(
           `[Workbench ERROR] ${err instanceof Error ? err.message : String(err)}\n`,
