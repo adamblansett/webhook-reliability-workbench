@@ -5,6 +5,7 @@ import https from 'node:https';
 import type { EventStore, WebhookEvent } from '../events/types.js';
 import { generateSyntheticWebhook } from './generator.js';
 import { validateDestinationUrl, createSsrfLookup } from '../security/ssrf.js';
+import { resolveSafePath } from '../security/path.js';
 
 export interface TestScenarioExpectation {
   status?: number;
@@ -75,7 +76,7 @@ export interface ScenarioSuiteResult {
  * Loads a scenario from a JSON or basic YAML file.
  */
 export async function loadScenarioFile(filePath: string): Promise<TestScenario> {
-  const resolved = path.resolve(process.cwd(), filePath);
+  const resolved = resolveSafePath(filePath);
   const raw = await fs.readFile(resolved, 'utf8');
 
   if (filePath.endsWith('.json')) {

@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import type { ReceiverOptions, ReceiverServerInfo } from './types.js';
 import type { EventStore, WebhookEvent } from '../events/types.js';
 import { createDefaultStore, generateEventId } from '../events/store.js';
@@ -80,13 +81,55 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
   const encoding = preset?.encoding ?? 'hex';
   const toleranceSeconds = preset?.toleranceSeconds;
 
+  const sessionToken = crypto.randomBytes(24).toString('hex');
+
   const server = http.createServer(async (req, res) => {
     const startTime = Date.now();
     const reqUrl = new URL(req.url ?? '/', `http://${host}:${port}`);
 
+    // Host Header Validation / DNS Rebinding Protection
+    if (!allowExternal) {
+      const rawHostHeader = req.headers.host;
+      if (rawHostHeader) {
+        const hostWithoutPort = rawHostHeader.startsWith('[')
+          ? rawHostHeader.slice(1, rawHostHeader.indexOf(']'))
+          : rawHostHeader.split(':')[0]!.toLowerCase();
+
+        let tunnelHost: string | null = null;
+        if (tunnelInstance?.url) {
+          try {
+            tunnelHost = new URL(tunnelInstance.url).hostname.toLowerCase();
+          } catch {
+            // Ignore invalid tunnel URL
+          }
+        }
+
+        const isAllowedHost =
+          hostWithoutPort === 'localhost' ||
+          hostWithoutPort === '127.0.0.1' ||
+          hostWithoutPort === '::1' ||
+          hostWithoutPort === host.toLowerCase() ||
+          (tunnelHost !== null && hostWithoutPort === tunnelHost);
+
+        if (!isAllowedHost) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: 'Bad Request',
+              message: `Untrusted Host header "${rawHostHeader}". DNS rebinding protection rejected this request.`,
+            }),
+          );
+          return;
+        }
+      }
+    }
+
     // Health check endpoint
     if (req.method === 'GET' && reqUrl.pathname === '/__workbench/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'X-Content-Type-Options': 'nosniff',
+      });
       res.end(
         JSON.stringify({
           status: 'healthy',
@@ -99,11 +142,49 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
 
     // Server-Sent Events stream endpoint for live monitoring
     if (req.method === 'GET' && reqUrl.pathname === '/__workbench/stream') {
+      if (req.headers['sec-fetch-site'] === 'cross-site') {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Cross-site SSE requests are forbidden' }));
+        return;
+      }
+
+      const origin = req.headers['origin'];
+      if (origin) {
+        try {
+          const originHost = new URL(origin).hostname.toLowerCase();
+          const isAllowedOrigin =
+            isLoopbackIp(originHost) ||
+            originHost === 'localhost' ||
+            originHost === host.toLowerCase();
+          if (!isAllowedOrigin && !allowExternal) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                error: 'Cross-origin access from external web origin is forbidden',
+              }),
+            );
+            return;
+          }
+        } catch {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid Origin header' }));
+          return;
+        }
+      }
+
+      const clientToken =
+        reqUrl.searchParams.get('token') || req.headers['x-workbench-token'];
+      if (clientToken && clientToken !== sessionToken) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden: Invalid workbench session token' }));
+        return;
+      }
+
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
+        'X-Content-Type-Options': 'nosniff',
       });
       res.write(': connected\n\n');
       sseClients.add(res);
@@ -116,18 +197,63 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
 
     // Embedded Web Inspector UI
     if (req.method === 'GET' && reqUrl.pathname === '/__workbench/ui') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(renderInspectorHtml());
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy':
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none';",
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'Referrer-Policy': 'strict-origin-when-cross-origin',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+      res.end(renderInspectorHtml({ sessionToken }));
       return;
     }
 
     // Replay endpoint for UI or programmatic triggers
     if (req.method === 'POST' && reqUrl.pathname === '/__workbench/replay') {
+      if (req.headers['sec-fetch-site'] === 'cross-site') {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Cross-site replay requests are forbidden' }));
+        return;
+      }
+
+      const origin = req.headers['origin'];
+      if (origin) {
+        try {
+          const originHost = new URL(origin).hostname.toLowerCase();
+          const isAllowedOrigin =
+            isLoopbackIp(originHost) ||
+            originHost === 'localhost' ||
+            originHost === host.toLowerCase();
+          if (!isAllowedOrigin && !allowExternal) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                error: 'Cross-origin access from external web origin is forbidden',
+              }),
+            );
+            return;
+          }
+        } catch {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid Origin header' }));
+          return;
+        }
+      }
+
       let bodyText = '';
       req.on('data', (c) => (bodyText += c.toString('utf8')));
       req.on('end', async () => {
         try {
           const payload = JSON.parse(bodyText);
+          const reqToken = req.headers['x-workbench-token'] || payload.token;
+          if (reqToken && reqToken !== sessionToken) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Forbidden: Invalid workbench token' }));
+            return;
+          }
+
           const event = await store.get(payload.eventId);
           if (!event) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -548,6 +674,7 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
           url: `http://${host}:${actualPort}${webhookPath}`,
           path: webhookPath,
           pid: process.pid,
+          sessionToken,
         };
 
         // Load schema from file if configured

@@ -84,16 +84,16 @@ export function generateFuzzMutations(baseEvent: WebhookEvent): FuzzMutation[] {
   });
 
   if (parsed && typeof parsed === 'object') {
-    // 3. Prototype Pollution Injection
-    const protoObj = {
-      ...parsed,
-      __proto__: { isAdmin: true },
-      constructor: { prototype: { polluter: true } },
-    };
+    // 3. Prototype Pollution Injection (Safely formatted as JSON string to test consumer without polluting host process)
+    const baseJson = JSON.stringify(parsed);
+    const mutatedProtoJson = baseJson.startsWith('{')
+      ? '{"__proto__":{"isAdmin":true},"constructor":{"prototype":{"polluter":true}},' +
+        baseJson.slice(1)
+      : '{"__proto__":{"isAdmin":true}}';
     mutations.push({
       name: 'prototype_pollution_keys',
       description: 'Payload containing __proto__ and constructor prototype keys',
-      mutatedBody: JSON.stringify(protoObj),
+      mutatedBody: mutatedProtoJson,
       headers: { ...baseHeaders, 'content-type': 'application/json' },
     });
 

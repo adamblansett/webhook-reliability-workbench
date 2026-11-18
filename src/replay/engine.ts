@@ -11,6 +11,7 @@ import {
 import { LIMITS } from '../security/limits.js';
 import { computeHmacDigest } from '../signatures/verifier.js';
 import { isSensitiveHeader, redactHeaders, redactString } from '../security/redaction.js';
+import { sanitizeHeaders } from '../security/headers.js';
 
 const DISALLOWED_FORWARD_HEADERS = new Set([
   'host',
@@ -139,6 +140,8 @@ export async function replayWebhookEvent(
   const bodyBuffer = Buffer.from(event.rawBody, 'utf8');
   outgoingHeaders['content-length'] = String(bodyBuffer.length);
 
+  const safeOutgoingHeaders = sanitizeHeaders(outgoingHeaders, false);
+
   while (true) {
     // Validate destination URL against SSRF rules before connection
     const validated = await validateDestinationUrl(currentUrl, {
@@ -164,7 +167,7 @@ export async function replayWebhookEvent(
       hostname: cleanHostname,
       port: targetUrl.port || (isHttps ? 443 : 80),
       path: `${targetUrl.pathname}${targetUrl.search}`,
-      headers: outgoingHeaders,
+      headers: safeOutgoingHeaders,
       timeout: timeoutMs,
       lookup: ssrfLookup,
     };
@@ -265,7 +268,7 @@ export async function replayWebhookEvent(
           durationMs,
           success: false,
           error: `Exceeded maximum redirect limit of ${maxRedirects}`,
-          requestHeadersSent: redactHeaders(outgoingHeaders),
+          requestHeadersSent: redactHeaders(safeOutgoingHeaders),
           requestMethod: currentMethod,
           requestUrl: currentUrl,
         };
@@ -280,11 +283,11 @@ export async function replayWebhookEvent(
       // Security: Strip credentials and authorization headers if redirect crosses origins
       if (nextUrl.origin !== targetUrl.origin) {
         for (const h of AUTH_HEADERS) {
-          delete outgoingHeaders[h];
+          delete safeOutgoingHeaders[h];
         }
-        for (const [k] of Object.entries(outgoingHeaders)) {
+        for (const [k] of Object.entries(safeOutgoingHeaders)) {
           if (isSensitiveHeader(k)) {
-            delete outgoingHeaders[k];
+            delete safeOutgoingHeaders[k];
           }
         }
       }
@@ -296,8 +299,8 @@ export async function replayWebhookEvent(
         responseResult.statusCode === 303
       ) {
         currentMethod = 'GET';
-        delete outgoingHeaders['content-type'];
-        delete outgoingHeaders['content-length'];
+        delete safeOutgoingHeaders['content-type'];
+        delete safeOutgoingHeaders['content-length'];
       }
 
       currentUrl = nextUrl.toString();
@@ -322,7 +325,7 @@ export async function replayWebhookEvent(
       error: responseResult.error,
       responseHeaders: redactHeaders(responseResult.resHeaders) as Record<string, string>,
       responseBodyPreview: redactString(preview),
-      requestHeadersSent: redactHeaders(outgoingHeaders),
+      requestHeadersSent: redactHeaders(safeOutgoingHeaders),
       requestMethod: currentMethod,
       requestUrl: currentUrl,
     };

@@ -1,8 +1,11 @@
 /**
  * Embedded Web Inspector UI for Webhook Reliability Workbench.
  * Self-contained HTML/CSS/JavaScript with zero runtime dependencies.
+ * Hardened with full HTML escaping, strict Content Security Policy, and session token auth.
  */
-export function renderInspectorHtml(): string {
+export function renderInspectorHtml(options?: { sessionToken?: string }): string {
+  const token = options?.sessionToken ?? '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -99,21 +102,41 @@ export function renderInspectorHtml(): string {
       cursor: pointer;
       transition: background 0.15s;
     }
-    .event-item:hover { background: rgba(51, 65, 85, 0.4); }
-    .event-item.active { background: var(--card-bg); border-left: 3px solid var(--accent); }
+    .event-item:hover {
+      background: rgba(51, 65, 85, 0.4);
+    }
+    .event-item.active {
+      background: rgba(56, 189, 248, 0.15);
+      border-left: 3px solid var(--accent);
+    }
     .event-item-top {
       display: flex;
+      align-items: center;
       justify-content: space-between;
       margin-bottom: 4px;
-      font-size: 0.85rem;
     }
     .method-badge {
+      font-size: 0.75rem;
       font-weight: 700;
-      color: var(--accent);
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #334155;
+      color: #38bdf8;
       font-family: var(--font-mono);
     }
-    .path-text { font-family: var(--font-mono); color: var(--text); }
-    .event-time { font-size: 0.75rem; color: var(--text-muted); }
+    .path-text {
+      font-size: 0.85rem;
+      font-family: var(--font-mono);
+      color: var(--text);
+      max-width: 180px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-time {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
     .details {
       padding: 24px;
       overflow-y: auto;
@@ -125,15 +148,29 @@ export function renderInspectorHtml(): string {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 18px;
+      padding: 20px;
     }
     .details-card h3 {
       font-size: 0.95rem;
-      margin-bottom: 12px;
-      color: var(--accent);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      margin-bottom: 14px;
+      color: var(--text);
+      font-weight: 600;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      font-family: var(--font-mono);
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--text-muted);
+      width: 160px;
+      font-weight: 500;
     }
     pre {
       background: #090d16;
@@ -142,48 +179,40 @@ export function renderInspectorHtml(): string {
       padding: 14px;
       font-family: var(--font-mono);
       font-size: 0.85rem;
+      color: #e2e8f0;
       overflow-x: auto;
+      max-height: 400px;
       white-space: pre-wrap;
       word-break: break-all;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-    }
-    th, td {
-      padding: 8px 10px;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-    }
-    th { color: var(--text-muted); font-weight: 600; width: 35%; }
     .replay-bar {
       display: flex;
       gap: 10px;
-      margin-top: 10px;
+      margin-top: 14px;
     }
     input[type="text"] {
       flex: 1;
-      background: #090d16;
+      background: #0f172a;
       border: 1px solid var(--border);
-      color: var(--text);
-      padding: 8px 12px;
       border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
       font-family: var(--font-mono);
       font-size: 0.85rem;
     }
     button {
       background: var(--accent);
-      color: #090d16;
-      font-weight: 600;
+      color: #0f172a;
       border: none;
-      padding: 8px 16px;
       border-radius: 6px;
+      padding: 8px 16px;
+      font-weight: 600;
       cursor: pointer;
       transition: background 0.15s;
     }
-    button:hover { background: var(--accent-hover); }
+    button:hover {
+      background: var(--accent-hover);
+    }
     .empty-state {
       padding: 40px;
       text-align: center;
@@ -221,11 +250,22 @@ export function renderInspectorHtml(): string {
   </main>
 
   <script>
+    const SESSION_TOKEN = ${JSON.stringify(token)};
     const events = [];
     let selectedEventId = null;
     const eventList = document.getElementById('eventList');
     const eventDetails = document.getElementById('eventDetails');
     const eventCount = document.getElementById('eventCount');
+
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
 
     function renderList() {
       if (events.length === 0) {
@@ -233,24 +273,32 @@ export function renderInspectorHtml(): string {
         eventCount.textContent = '0';
         return;
       }
-      eventCount.textContent = events.length;
+      eventCount.textContent = String(events.length);
       eventList.innerHTML = events.map(evt => {
         const isActive = evt.id === selectedEventId ? 'active' : '';
         const sigBadge = evt.signature ? (evt.signature.valid ? '✓ HMAC' : '✗ Sig') : '';
+        const statusClass = evt.responseStatus >= 400 ? 'var(--error)' : 'var(--success)';
         return \`
-          <li class="event-item \${isActive}" onclick="selectEvent('\${evt.id}')">
+          <li class="event-item \${isActive}" data-id="\${escapeHtml(evt.id)}">
             <div class="event-item-top">
-              <span class="method-badge">\${evt.method}</span>
-              <span class="path-text">\${evt.path}</span>
-              <span style="color: \${evt.responseStatus >= 400 ? 'var(--error)' : 'var(--success)'}">\${evt.responseStatus}</span>
+              <span class="method-badge">\${escapeHtml(evt.method)}</span>
+              <span class="path-text">\${escapeHtml(evt.path)}</span>
+              <span style="color: \${statusClass}">\${escapeHtml(evt.responseStatus)}</span>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span class="event-time">\${new Date(evt.timestamp).toLocaleTimeString()}</span>
-              \${sigBadge ? \`<span style="font-size: 0.7rem; color: \${evt.signature.valid ? 'var(--success)' : 'var(--error)'}">\${sigBadge}</span>\` : ''}
+              <span class="event-time">\${escapeHtml(new Date(evt.timestamp).toLocaleTimeString())}</span>
+              \${sigBadge ? \`<span style="font-size: 0.7rem; color: \${evt.signature.valid ? 'var(--success)' : 'var(--error)'}">\${escapeHtml(sigBadge)}</span>\` : ''}
             </div>
           </li>
         \`;
       }).join('');
+
+      eventList.querySelectorAll('.event-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const id = el.getAttribute('data-id');
+          if (id) selectEvent(id);
+        });
+      });
     }
 
     function selectEvent(id) {
@@ -261,28 +309,32 @@ export function renderInspectorHtml(): string {
 
       const headerRows = Object.entries(evt.headers || {}).map(([k, v]) => \`
         <tr>
-          <th>\${k}</th>
-          <td>\${Array.isArray(v) ? v.join(', ') : v}</td>
+          <th>\${escapeHtml(k)}</th>
+          <td>\${escapeHtml(Array.isArray(v) ? v.join(', ') : v)}</td>
         </tr>
       \`).join('');
 
+      const sigInfo = evt.signature
+        ? \`<tr><th>Signature Check</th><td style="color: \${evt.signature.valid ? 'var(--success)' : 'var(--error)'}">\${escapeHtml(evt.signature.valid ? 'Valid (' + evt.signature.algorithm + ')' : 'Invalid: ' + (evt.signature.reason || ''))}</td></tr>\`
+        : '';
+
       eventDetails.innerHTML = \`
         <div class="details-card">
-          <h3>Event Overview: \${evt.id}</h3>
+          <h3>Event Overview: \${escapeHtml(evt.id)}</h3>
           <table>
-            <tr><th>Timestamp</th><td>\${evt.timestamp}</td></tr>
-            <tr><th>HTTP Method</th><td>\${evt.method}</td></tr>
-            <tr><th>Path</th><td>\${evt.path}</td></tr>
-            <tr><th>Response Code</th><td>\${evt.responseStatus}</td></tr>
-            <tr><th>Payload Size</th><td>\${evt.contentLength} bytes</td></tr>
-            \${evt.signature ? \`<tr><th>Signature Check</th><td style="color: \${evt.signature.valid ? 'var(--success)' : 'var(--error)'}">\${evt.signature.valid ? 'Valid (' + evt.signature.algorithm + ')' : 'Invalid: ' + evt.signature.reason}</td></tr>\` : ''}
+            <tr><th>Timestamp</th><td>\${escapeHtml(evt.timestamp)}</td></tr>
+            <tr><th>HTTP Method</th><td>\${escapeHtml(evt.method)}</td></tr>
+            <tr><th>Path</th><td>\${escapeHtml(evt.path)}</td></tr>
+            <tr><th>Response Code</th><td>\${escapeHtml(evt.responseStatus)}</td></tr>
+            <tr><th>Payload Size</th><td>\${escapeHtml(evt.contentLength)} bytes</td></tr>
+            \${sigInfo}
           </table>
 
           <div style="margin-top: 16px;">
             <label style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Replay to Destination URL:</label>
             <div class="replay-bar">
               <input type="text" id="replayUrlInput" value="http://127.0.0.1:3000/api/webhooks" />
-              <button onclick="triggerReplay('\${evt.id}')">Replay Now</button>
+              <button id="replayBtn">Replay Now</button>
             </div>
             <div id="replayResult" style="margin-top: 8px; font-size: 0.85rem; font-family: var(--font-mono);"></div>
           </div>
@@ -295,22 +347,41 @@ export function renderInspectorHtml(): string {
 
         <div class="details-card">
           <h3>Payload Body</h3>
-          <pre>\${evt.body ? JSON.stringify(evt.body, null, 2) : evt.rawBody || '(empty body)'}</pre>
+          <pre>\${escapeHtml(evt.body ? JSON.stringify(evt.body, null, 2) : evt.rawBody || '(empty body)')}</pre>
         </div>
       \`;
+
+      const replayBtn = document.getElementById('replayBtn');
+      if (replayBtn) {
+        replayBtn.addEventListener('click', () => triggerReplay(evt.id));
+      }
     }
 
     async function triggerReplay(eventId) {
-      const url = document.getElementById('replayUrlInput').value.trim();
+      const urlInput = document.getElementById('replayUrlInput');
+      const url = urlInput ? urlInput.value.trim() : '';
       const resElem = document.getElementById('replayResult');
+      if (!resElem) return;
       resElem.textContent = 'Replaying...';
       resElem.style.color = 'var(--accent)';
 
       try {
+        const headers = {
+          'Content-Type': 'application/json',
+        };
+        if (SESSION_TOKEN) {
+          headers['X-Workbench-Token'] = SESSION_TOKEN;
+        }
+
         const resp = await fetch('/__workbench/replay', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eventId, destination: url, allowLoopback: true })
+          headers,
+          body: JSON.stringify({
+            eventId,
+            destination: url,
+            allowLoopback: true,
+            token: SESSION_TOKEN,
+          })
         });
         const data = await resp.json();
         if (data.success) {
@@ -326,8 +397,11 @@ export function renderInspectorHtml(): string {
       }
     }
 
-    // Connect to Server-Sent Events stream
-    const sse = new EventSource('/__workbench/stream');
+    // Connect to Server-Sent Events stream with token auth
+    const streamUrl = SESSION_TOKEN
+      ? '/__workbench/stream?token=' + encodeURIComponent(SESSION_TOKEN)
+      : '/__workbench/stream';
+    const sse = new EventSource(streamUrl);
     sse.onmessage = (msg) => {
       try {
         const evt = JSON.parse(msg.data);
@@ -342,8 +416,11 @@ export function renderInspectorHtml(): string {
       }
     };
     sse.onerror = () => {
-      document.getElementById('connStatus').innerHTML = '<span class="status-dot" style="background: var(--error)"></span> Disconnected';
-      document.getElementById('connStatus').style.color = 'var(--error)';
+      const connStatus = document.getElementById('connStatus');
+      if (connStatus) {
+        connStatus.innerHTML = '<span class="status-dot" style="background: var(--error)"></span> Disconnected';
+        connStatus.style.color = 'var(--error)';
+      }
     };
   </script>
 </body>

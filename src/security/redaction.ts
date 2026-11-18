@@ -15,6 +15,13 @@ const SENSITIVE_HEADER_NAMES = new Set([
   'x-hub-signature',
   'x-hub-signature-256',
   'stripe-signature',
+  'x-shopify-hmac-sha256',
+  'x-slack-signature',
+  'webhook-signature',
+  'svix-signature',
+  'x-signature',
+  'signature',
+  'x-workbench-token',
 ]);
 
 const SENSITIVE_FIELD_PATTERNS = [
@@ -70,6 +77,9 @@ export function isSensitiveFieldKey(key: string): boolean {
 export function redactString(text: string): string {
   if (!text || typeof text !== 'string') {
     return text;
+  }
+  if (text.length > 1024 * 1024) {
+    return REDACTED_PLACEHOLDER;
   }
   let result = text;
   for (const pattern of SENSITIVE_STRING_PATTERNS) {

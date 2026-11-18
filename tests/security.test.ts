@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import http from 'node:http';
 import {
   validateDestinationUrl,
   normalizeIp,
@@ -23,6 +24,16 @@ import {
   assertFileWriteSafety,
   PathSecurityError,
 } from '../src/security/path.js';
+import {
+  isValidHeaderName,
+  isValidHeaderValue,
+  sanitizeHeaderValue,
+  sanitizeHeaders,
+  HeaderSecurityError,
+} from '../src/security/headers.js';
+import { renderInspectorHtml } from '../src/receiver/ui.js';
+import { createReceiver } from '../src/receiver/server.js';
+import { InMemoryEventStore } from '../src/events/store.js';
 
 describe('Security Safeguards', () => {
   describe('SSRF Protection and Destination Validation', () => {
@@ -342,6 +353,302 @@ describe('Security Safeguards', () => {
         }
       } finally {
         await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('HTTP Header Validation and CRLF Injection Prevention', () => {
+    it('validates RFC 7230 token characters in header names', () => {
+      expect(isValidHeaderName('content-type')).toBe(true);
+      expect(isValidHeaderName('X-Custom-Header_123')).toBe(true);
+      expect(isValidHeaderName('Stripe-Signature')).toBe(true);
+
+      expect(isValidHeaderName('invalid header with spaces')).toBe(false);
+      expect(isValidHeaderName('Header:WithColon')).toBe(false);
+      expect(isValidHeaderName('Header\r\nInjected')).toBe(false);
+      expect(isValidHeaderName('')).toBe(false);
+    });
+
+    it('detects CRLF characters and null bytes in header values', () => {
+      expect(isValidHeaderValue('application/json')).toBe(true);
+      expect(isValidHeaderValue('Bearer token123')).toBe(true);
+
+      expect(isValidHeaderValue('Bearer val\r\nInjected: malicious')).toBe(false);
+      expect(isValidHeaderValue('val\nInjected: evil')).toBe(false);
+      expect(isValidHeaderValue('val\0injected')).toBe(false);
+    });
+
+    it('sanitizes header values by stripping CRLF and null characters', () => {
+      expect(sanitizeHeaderValue('val\r\nInjected: evil')).toBe('val  Injected: evil');
+      expect(sanitizeHeaderValue('token\0hidden')).toBe('token hidden');
+    });
+
+    it('sanitizes headers record and strips illegal tokens', () => {
+      const sanitized = sanitizeHeaders({
+        'content-type': 'application/json',
+        'X-Injected-Header': 'clean-value\r\nX-Smuggled: true',
+        'Bad Header with space': 'dropped',
+      });
+
+      expect(sanitized['content-type']).toBe('application/json');
+      expect(sanitized['x-injected-header']).toBe('clean-value  X-Smuggled: true');
+      expect(sanitized['bad header with space']).toBeUndefined();
+    });
+
+    it('throws HeaderSecurityError in strict mode on invalid header names or CRLF values', () => {
+      expect(() => sanitizeHeaders({ 'Bad Name With Spaces': 'val' }, true)).toThrowError(
+        HeaderSecurityError,
+      );
+
+      expect(() =>
+        sanitizeHeaders({ 'X-Bad': 'val\r\nInjected: evil' }, true),
+      ).toThrowError(HeaderSecurityError);
+    });
+  });
+
+  describe('Cloud Metadata Expansion', () => {
+    it('blocks Azure cloud metadata hostname metadata.azure.com', async () => {
+      await expect(
+        validateDestinationUrl('http://metadata.azure.com/metadata/instance'),
+      ).rejects.toThrowError(SsrSecurityError);
+    });
+
+    it('blocks Alibaba cloud metadata IP 100.100.100.200', async () => {
+      await expect(
+        validateDestinationUrl('http://100.100.100.200/latest/meta-data/'),
+      ).rejects.toThrowError(SsrSecurityError);
+    });
+
+    it('blocks AWS IPv6 metadata address fd00:ec2::254', async () => {
+      await expect(
+        validateDestinationUrl('http://[fd00:ec2::254]/latest/meta-data/'),
+      ).rejects.toThrowError(SsrSecurityError);
+    });
+  });
+
+  describe('Web Inspector UI Security & XSS Prevention', () => {
+    it('renders inspector HTML with session token and escaping function', () => {
+      const html = renderInspectorHtml({ sessionToken: 'sec_tok_12345' });
+      expect(html).toContain('const SESSION_TOKEN = "sec_tok_12345"');
+      expect(html).toContain('function escapeHtml(str)');
+      expect(html).toContain('X-Workbench-Token');
+    });
+
+    it('prevents XSS by properly escaping dynamic HTML bindings in event inspector template', () => {
+      const html = renderInspectorHtml();
+      expect(html).toContain('escapeHtml(evt.id)');
+      expect(html).toContain('escapeHtml(evt.method)');
+      expect(html).toContain('escapeHtml(evt.path)');
+      expect(html).toContain('escapeHtml(evt.body');
+    });
+  });
+
+  describe('DNS Rebinding & Host Header Validation', () => {
+    it('rejects requests with untrusted Host header when receiver is bound to loopback', async () => {
+      const store = new InMemoryEventStore();
+      const receiver = createReceiver({
+        host: '127.0.0.1',
+        port: 0,
+        silent: true,
+        store,
+      });
+
+      const info = await receiver.start();
+      try {
+        const resp = await new Promise<{ statusCode: number; body: string }>(
+          (resolve, reject) => {
+            const req = http.request(
+              {
+                hostname: '127.0.0.1',
+                port: info.port,
+                path: '/',
+                method: 'POST',
+                headers: {
+                  host: 'evil.attacker.com',
+                  connection: 'close',
+                },
+              },
+              (res) => {
+                let body = '';
+                res.on('data', (c) => (body += c.toString('utf8')));
+                res.on('end', () => resolve({ statusCode: res.statusCode ?? 0, body }));
+              },
+            );
+            req.on('error', reject);
+            req.end('{}');
+          },
+        );
+
+        expect(resp.statusCode).toBe(400);
+        expect(resp.body).toContain('Untrusted Host header');
+      } finally {
+        await receiver.stop();
+      }
+    });
+
+    it('allows requests with valid loopback Host header', async () => {
+      const store = new InMemoryEventStore();
+      const receiver = createReceiver({
+        host: '127.0.0.1',
+        port: 0,
+        silent: true,
+        store,
+      });
+
+      const info = await receiver.start();
+      try {
+        const resp = await new Promise<{ statusCode: number; body: string }>(
+          (resolve, reject) => {
+            const req = http.request(
+              {
+                hostname: '127.0.0.1',
+                port: info.port,
+                path: '/',
+                method: 'POST',
+                headers: {
+                  host: `127.0.0.1:${info.port}`,
+                  connection: 'close',
+                },
+              },
+              (res) => {
+                let body = '';
+                res.on('data', (c) => (body += c.toString('utf8')));
+                res.on('end', () => resolve({ statusCode: res.statusCode ?? 0, body }));
+              },
+            );
+            req.on('error', reject);
+            req.end('{}');
+          },
+        );
+
+        expect(resp.statusCode).toBe(200);
+      } finally {
+        await receiver.stop();
+      }
+    });
+  });
+
+  describe('Management Endpoints Cross-Site Protection', () => {
+    it('blocks cross-site SSE requests to /__workbench/stream', async () => {
+      const store = new InMemoryEventStore();
+      const receiver = createReceiver({
+        host: '127.0.0.1',
+        port: 0,
+        silent: true,
+        store,
+      });
+
+      const info = await receiver.start();
+      try {
+        const resp = await new Promise<{ statusCode: number }>((resolve, reject) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: info.port,
+              path: '/__workbench/stream',
+              method: 'GET',
+              headers: {
+                'sec-fetch-site': 'cross-site',
+                connection: 'close',
+              },
+            },
+            (res) => {
+              resolve({ statusCode: res.statusCode ?? 0 });
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+
+        expect(resp.statusCode).toBe(403);
+      } finally {
+        await receiver.stop();
+      }
+    });
+
+    it('blocks requests to /__workbench/replay with external Origin header', async () => {
+      const store = new InMemoryEventStore();
+      const receiver = createReceiver({
+        host: '127.0.0.1',
+        port: 0,
+        silent: true,
+        store,
+      });
+
+      const info = await receiver.start();
+      try {
+        const resp = await new Promise<{ statusCode: number }>((resolve, reject) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: info.port,
+              path: '/__workbench/replay',
+              method: 'POST',
+              headers: {
+                origin: 'https://malicious-website.com',
+                connection: 'close',
+              },
+            },
+            (res) => {
+              resolve({ statusCode: res.statusCode ?? 0 });
+            },
+          );
+          req.on('error', reject);
+          req.end(
+            JSON.stringify({ eventId: 'evt_123', destination: 'http://localhost:3000' }),
+          );
+        });
+
+        expect(resp.statusCode).toBe(403);
+      } finally {
+        await receiver.stop();
+      }
+    });
+
+    it('returns strict security headers on /__workbench/ui', async () => {
+      const store = new InMemoryEventStore();
+      const receiver = createReceiver({
+        host: '127.0.0.1',
+        port: 0,
+        silent: true,
+        store,
+      });
+
+      const info = await receiver.start();
+      try {
+        const resp = await new Promise<{
+          statusCode: number;
+          headers: http.IncomingHttpHeaders;
+        }>((resolve, reject) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: info.port,
+              path: '/__workbench/ui',
+              method: 'GET',
+              headers: {
+                connection: 'close',
+              },
+            },
+            (res) => {
+              resolve({
+                statusCode: res.statusCode ?? 0,
+                headers: res.headers,
+              });
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+
+        expect(resp.statusCode).toBe(200);
+        expect(resp.headers['x-frame-options']).toBe('DENY');
+        expect(resp.headers['x-content-type-options']).toBe('nosniff');
+        expect(resp.headers['content-security-policy']).toContain(
+          "frame-ancestors 'none'",
+        );
+      } finally {
+        await receiver.stop();
       }
     });
   });

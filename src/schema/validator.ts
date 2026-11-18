@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
+import { resolveSafePath } from '../security/path.js';
 
 export interface SchemaValidationResult {
   valid: boolean;
@@ -70,13 +70,15 @@ export function validateJsonSchema(
         `${currentPath}: String length ${data.length} exceeds maxLength ${schema.maxLength}`,
       );
     }
-    if (typeof schema.pattern === 'string') {
+    if (typeof schema.pattern === 'string' && schema.pattern.length <= 512) {
       try {
-        const regex = new RegExp(schema.pattern);
-        if (!regex.test(data)) {
-          errors.push(
-            `${currentPath}: String does not match pattern "${schema.pattern}"`,
-          );
+        if (data.length <= 20000) {
+          const regex = new RegExp(schema.pattern);
+          if (!regex.test(data)) {
+            errors.push(
+              `${currentPath}: String does not match pattern "${schema.pattern}"`,
+            );
+          }
         }
       } catch {
         // Ignore invalid regex in schema
@@ -101,7 +103,10 @@ export function validateJsonSchema(
     // Required fields check
     if (Array.isArray(schema.required)) {
       for (const reqKey of schema.required) {
-        if (typeof reqKey === 'string' && !(reqKey in dataObj)) {
+        if (
+          typeof reqKey === 'string' &&
+          !Object.prototype.hasOwnProperty.call(dataObj, reqKey)
+        ) {
           errors.push(`${currentPath}: Missing required property "${reqKey}"`);
         }
       }
@@ -111,7 +116,7 @@ export function validateJsonSchema(
     if (schema.properties && typeof schema.properties === 'object') {
       const properties = schema.properties as Record<string, Record<string, unknown>>;
       for (const [propName, propSchema] of Object.entries(properties)) {
-        if (propName in dataObj) {
+        if (Object.prototype.hasOwnProperty.call(dataObj, propName)) {
           const propRes = validateJsonSchema(
             dataObj[propName],
             propSchema,
@@ -173,7 +178,7 @@ export function validateJsonSchema(
 export async function loadSchemaFromFile(
   filePath: string,
 ): Promise<Record<string, unknown>> {
-  const resolved = path.resolve(process.cwd(), filePath);
+  const resolved = resolveSafePath(filePath);
   const raw = await fs.readFile(resolved, 'utf8');
   const parsed = JSON.parse(raw);
   if (!parsed || typeof parsed !== 'object') {

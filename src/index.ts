@@ -102,6 +102,14 @@ export {
   PathSecurityError,
 } from './security/path.js';
 
+export {
+  isValidHeaderName,
+  isValidHeaderValue,
+  sanitizeHeaderValue,
+  sanitizeHeaders,
+  HeaderSecurityError,
+} from './security/headers.js';
+
 export { LIMITS } from './security/limits.js';
 
 // Config & Exit Codes

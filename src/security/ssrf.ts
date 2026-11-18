@@ -131,7 +131,11 @@ export function isPrivateIp(ip: string): boolean {
 export function isLinkLocalOrMetadataIp(ip: string): boolean {
   const norm = normalizeIp(ip);
 
-  if (norm === '169.254.169.254') {
+  if (
+    norm === '169.254.169.254' ||
+    norm === '100.100.100.200' ||
+    norm === 'fd00:ec2::254'
+  ) {
     return true;
   }
 
@@ -139,7 +143,7 @@ export function isLinkLocalOrMetadataIp(ip: string): boolean {
     return isIpv4InCidr(norm, '169.254.0.0', 16);
   }
 
-  return norm.startsWith('fe80:');
+  return norm.startsWith('fe80:') || norm === 'fd00:ec2::254';
 }
 
 /**
@@ -169,8 +173,12 @@ export function isSpecialOrRestrictedIp(ip: string): boolean {
 
 const BLOCKED_HOSTNAMES = new Set([
   'metadata.google.internal',
+  'metadata.azure.com',
   'instance-data',
   '169.254.169.254',
+  '100.100.100.200',
+  'fd00:ec2::254',
+  'metadata.packet.net',
   'metadata',
 ]);
 

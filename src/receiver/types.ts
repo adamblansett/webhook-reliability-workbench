@@ -72,5 +72,6 @@ export interface ReceiverServerInfo {
   url: string;
   path: string;
   pid: number;
+  sessionToken?: string;
   tunnelUrl?: string;
 }
