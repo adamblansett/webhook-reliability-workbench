@@ -212,10 +212,16 @@ export class SqliteEventStore implements EventStore {
     const dir = path.dirname(this.filePath);
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
+    let sqliteModule: { DatabaseSync: new (path: string) => SqliteDatabase };
     try {
-      const sqliteModule = (await import('node:sqlite' as string)) as {
-        DatabaseSync: new (path: string) => SqliteDatabase;
-      };
+      sqliteModule = (await import('node:sqlite' as string)) as typeof sqliteModule;
+    } catch {
+      throw new Error(
+        `SQLite store requires the built-in node:sqlite module (Node.js >= 22.5). Current runtime: ${process.version}. Use the file or memory store instead.`,
+      );
+    }
+
+    try {
       const db = new sqliteModule.DatabaseSync(this.filePath);
 
       db.exec(`

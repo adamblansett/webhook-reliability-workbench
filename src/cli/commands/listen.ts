@@ -49,8 +49,12 @@ export function createListenCommand(): Command {
       'sha256',
     )
     .option(
-      '--forward-to <url>',
+      '--forward <url>',
       'Transparently proxy captured webhooks to target application URL',
+    )
+    .option(
+      '--forward-to <url>',
+      'Transparently proxy captured webhooks to target application URL (alias)',
     )
     .option('--forward-allow-loopback', 'Allow forwarding to loopback destinations', true)
     .option(
@@ -58,6 +62,35 @@ export function createListenCommand(): Command {
       'Allow forwarding to private network destinations',
       false,
     )
+    .option(
+      '--tunnel [provider]',
+      'Establish an ephemeral public ingress tunnel (cloudflare, localtunnel, auto)',
+    )
+    .option(
+      '--schema <schemaPath>',
+      'Path to JSON Schema file to validate incoming payload contracts against',
+    )
+    .option(
+      '--chaos',
+      'Enable probabilistic chaos simulation (random 5xx, tail latency spikes, connection drops)',
+      false,
+    )
+    .option(
+      '--failure-rate <rate>',
+      'Chaos failure probability (0.0 to 1.0, e.g. 0.25 for 25% failures)',
+      (v) => parseFloat(v),
+    )
+    .option(
+      '--latency-p95 <ms>',
+      'Chaos p95 tail latency in milliseconds (e.g. 3000)',
+      (v) => parseInt(v, 10),
+    )
+    .option(
+      '--drop-rate <rate>',
+      'Chaos abrupt connection drop probability (0.0 to 1.0, e.g. 0.05)',
+      (v) => parseFloat(v),
+    )
+    .option('--tui', 'Launch interactive Terminal UI dashboard', false)
     .option(
       '--ui',
       'Enable embedded Web Inspector UI (accessible at /__workbench/ui)',
@@ -90,10 +123,18 @@ export function createListenCommand(): Command {
           signatureHeader: opts.signatureHeader,
           signaturePrefix: opts.signaturePrefix,
           algorithm: opts.algorithm as SupportedSignatureAlgorithm,
-          forwardTo: opts.forwardTo,
+          forwardTo: opts.forward ?? opts.forwardTo,
           forwardAllowLoopback: opts.forwardAllowLoopback,
           forwardAllowPrivate: opts.forwardAllowPrivate,
           enableUi: opts.ui,
+          schemaPath: opts.schema,
+          chaos: opts.chaos,
+          chaosFailureRate: opts.failureRate,
+          chaosLatencyP95Ms: opts.latencyP95,
+          chaosDropRate: opts.dropRate,
+          tunnel: Boolean(opts.tunnel),
+          tunnelProvider: typeof opts.tunnel === 'string' ? opts.tunnel : 'auto',
+          tui: opts.tui,
           maxBodySize: opts.maxBodySize,
           store,
         });

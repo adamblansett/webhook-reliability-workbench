@@ -31,6 +31,17 @@ export interface WebhookEvent {
   signature: SignatureVerificationResult | null;
   replays: ReplayRecord[];
   forwardResult?: ReplayRecord | null;
+  schemaValidation?: {
+    valid: boolean;
+    errors?: string[];
+    schemaPath?: string;
+  } | null;
+  chaosInjected?: {
+    dropped?: boolean;
+    injectedStatus?: number;
+    injectedDelayMs?: number;
+    reason?: string;
+  } | null;
 }
 
 export interface EventStore {

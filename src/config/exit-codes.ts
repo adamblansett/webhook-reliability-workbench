@@ -10,6 +10,7 @@ export const ExitCode = {
   REPLAY_FAILED: 5,
   RECEIVER_ERROR: 6,
   GENERAL_ERROR: 7,
+  VALIDATION_ERROR: 8,
 } as const;
 
 export type ExitCodeType = (typeof ExitCode)[keyof typeof ExitCode];

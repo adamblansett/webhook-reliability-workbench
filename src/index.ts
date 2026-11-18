@@ -123,3 +123,57 @@ export {
   formatFixtureValidation,
   formatJson,
 } from './output/formatter.js';
+
+// Schema Validation & Drift Detection
+export {
+  validateJsonSchema,
+  detectSchemaDrift,
+  type SchemaValidationResult,
+  type SchemaDriftResult,
+} from './schema/validator.js';
+
+// Code Generation
+export {
+  generateTypeScriptTypes,
+  generateZodSchema,
+  type TypeGenerationOptions,
+} from './codegen/typeGenerator.js';
+export { generateCurlCommand, type CurlOptions } from './codegen/curlGenerator.js';
+
+// Chaos Simulation
+export {
+  evaluateChaos,
+  type ChaosOptions,
+  type ChaosDecision,
+} from './chaos/chaosSimulator.js';
+
+// Fuzz Testing & Downstream Resilience
+export {
+  generateFuzzMutations,
+  runFuzzTest,
+  type FuzzMutation,
+  type FuzzMutationResult,
+  type FuzzReport,
+  type FuzzTestOptions,
+} from './fuzz/fuzzer.js';
+
+// Test Scenario Suite Runner
+export {
+  executeScenarioSuite,
+  loadScenarioFile,
+  type TestScenario,
+  type TestScenarioStep,
+  type TestScenarioExpectation,
+  type StepExecutionResult,
+  type ScenarioSuiteResult,
+} from './testing/suite.js';
+
+// Local Tunneling
+export {
+  startTunnel,
+  type TunnelOptions,
+  type TunnelInstance,
+} from './tunnel/manager.js';
+
+// Terminal Dashboard (TUI)
+export { TerminalDashboard, type TuiOptions } from './tui/dashboard.js';

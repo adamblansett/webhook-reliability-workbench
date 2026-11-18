@@ -43,6 +43,23 @@ export interface ReceiverOptions {
   /** Enable embedded Web UI inspector at /__workbench/ui */
   enableUi?: boolean;
 
+  /** Chaos simulation options */
+  chaos?: boolean;
+  chaosFailureRate?: number;
+  chaosLatencyP95Ms?: number;
+  chaosDropRate?: number;
+
+  /** Schema validation options */
+  schemaPath?: string;
+  schema?: Record<string, unknown>;
+
+  /** Automatic ingress tunnel */
+  tunnel?: boolean;
+  tunnelProvider?: 'cloudflare' | 'localtunnel' | 'auto';
+
+  /** Launch interactive Terminal UI */
+  tui?: boolean;
+
   /** EventStore instance to persist captured events */
   store?: EventStore;
   /** Silence console logs during testing */
@@ -55,4 +72,5 @@ export interface ReceiverServerInfo {
   url: string;
   path: string;
   pid: number;
+  tunnelUrl?: string;
 }

@@ -1,5 +1,7 @@
 import { Command } from 'commander';
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import pc from 'picocolors';
 import { createDefaultStore } from '../../events/store.js';
 import {
   formatEventList,
@@ -9,6 +11,12 @@ import {
 import { diffEvents } from '../../output/diff.js';
 import { ExitCode } from '../../config/exit-codes.js';
 import { redactEventForDisplay } from '../../security/redaction.js';
+import { generateCurlCommand } from '../../codegen/curlGenerator.js';
+import {
+  generateTypeScriptTypes,
+  generateZodSchema,
+} from '../../codegen/typeGenerator.js';
+import { validateJsonSchema, loadSchemaFromFile } from '../../schema/validator.js';
 
 export function createEventsCommand(): Command {
   const eventsCmd = new Command('events');
@@ -213,6 +221,153 @@ export function createEventsCommand(): Command {
       });
 
       req.end();
+    });
+
+  eventsCmd
+    .command('curl <eventId>')
+    .description(
+      'Generate ready-to-run executable cURL command line for a captured event',
+    )
+    .option('--url <destinationUrl>', 'Override target URL in generated curl command')
+    .option('--store <filePath>', 'Path to file-backed event store')
+    .action(async (eventId: string, opts) => {
+      const store = createDefaultStore({
+        type: 'file',
+        filePath: opts.store,
+      });
+
+      try {
+        const event = await store.get(eventId);
+        if (!event) {
+          process.stderr.write(
+            `[Workbench ERROR] Event "${eventId}" not found in store.\n`,
+          );
+          process.exit(ExitCode.NOT_FOUND);
+        }
+
+        const curl = generateCurlCommand(event, { overrideUrl: opts.url });
+        process.stdout.write(curl + '\n');
+      } catch (err) {
+        process.stderr.write(
+          `[Workbench ERROR] ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+        process.exit(ExitCode.GENERAL_ERROR);
+      }
+    });
+
+  eventsCmd
+    .command('types <eventId>')
+    .description(
+      'Infer and generate TypeScript interfaces or Zod schemas from captured JSON payload',
+    )
+    .option(
+      '--format <format>',
+      'Output format: "ts" for TypeScript or "zod" for Zod schema',
+      'ts',
+    )
+    .option('--name <typeName>', 'Root interface or schema name', 'WebhookPayload')
+    .option('-o, --output <filePath>', 'Write generated types to file instead of stdout')
+    .option('--store <filePath>', 'Path to file-backed event store')
+    .action(async (eventId: string, opts) => {
+      const store = createDefaultStore({
+        type: 'file',
+        filePath: opts.store,
+      });
+
+      try {
+        const event = await store.get(eventId);
+        if (!event) {
+          process.stderr.write(
+            `[Workbench ERROR] Event "${eventId}" not found in store.\n`,
+          );
+          process.exit(ExitCode.NOT_FOUND);
+        }
+
+        const dataToInfer =
+          event.body ?? (event.rawBody ? JSON.parse(event.rawBody) : null);
+        if (!dataToInfer || typeof dataToInfer !== 'object') {
+          process.stderr.write(
+            `[Workbench ERROR] Event "${eventId}" does not contain a JSON body.\n`,
+          );
+          process.exit(ExitCode.INVALID_ARGUMENT);
+        }
+
+        const generatedCode =
+          opts.format === 'zod'
+            ? generateZodSchema(dataToInfer, opts.name)
+            : generateTypeScriptTypes(dataToInfer, opts.name);
+
+        if (opts.output) {
+          await fs.writeFile(opts.output, generatedCode + '\n', 'utf8');
+          process.stdout.write(
+            pc.green(
+              `✓ Generated ${opts.format.toUpperCase()} definitions written to ${opts.output}\n`,
+            ),
+          );
+        } else {
+          process.stdout.write(generatedCode + '\n');
+        }
+      } catch (err) {
+        process.stderr.write(
+          `[Workbench ERROR] ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+        process.exit(ExitCode.GENERAL_ERROR);
+      }
+    });
+
+  eventsCmd
+    .command('validate <eventId>')
+    .description('Validate a captured event payload against a JSON Schema file')
+    .requiredOption('--schema <schemaPath>', 'Path to JSON Schema file')
+    .option('--store <filePath>', 'Path to file-backed event store')
+    .option('--json', 'Output validation result as machine-readable JSON', false)
+    .action(async (eventId: string, opts) => {
+      const store = createDefaultStore({
+        type: 'file',
+        filePath: opts.store,
+      });
+
+      try {
+        const event = await store.get(eventId);
+        if (!event) {
+          process.stderr.write(
+            `[Workbench ERROR] Event "${eventId}" not found in store.\n`,
+          );
+          process.exit(ExitCode.NOT_FOUND);
+        }
+
+        const schema = await loadSchemaFromFile(opts.schema);
+        const dataToValidate =
+          event.body ?? (event.rawBody ? JSON.parse(event.rawBody) : null);
+        const res = validateJsonSchema(dataToValidate, schema);
+
+        if (opts.json) {
+          process.stdout.write(JSON.stringify(res, null, 2) + '\n');
+          process.exit(res.valid ? ExitCode.SUCCESS : ExitCode.VALIDATION_ERROR);
+        }
+
+        if (res.valid) {
+          process.stdout.write(
+            pc.green(`✓ Event "${eventId}" conforms to schema "${opts.schema}"\n`),
+          );
+          process.exit(ExitCode.SUCCESS);
+        } else {
+          process.stderr.write(
+            pc.red(
+              `✗ Event "${eventId}" failed schema validation against "${opts.schema}":\n`,
+            ),
+          );
+          for (const err of res.errors) {
+            process.stderr.write(pc.red(`  • ${err}\n`));
+          }
+          process.exit(ExitCode.VALIDATION_ERROR);
+        }
+      } catch (err) {
+        process.stderr.write(
+          `[Workbench ERROR] ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+        process.exit(ExitCode.GENERAL_ERROR);
+      }
     });
 
   return eventsCmd;

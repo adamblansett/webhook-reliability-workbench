@@ -10,6 +10,12 @@ import {
 } from '../src/events/store.js';
 import type { WebhookEvent, ReplayRecord } from '../src/events/types.js';
 
+// node:sqlite ships in Node >= 22.5; skip SQLite tests on older runtimes (e.g. the Node 20 CI leg).
+const hasNodeSqlite = await import('node:sqlite' as string).then(
+  () => true,
+  () => false,
+);
+
 describe('Event Store', () => {
   let tempDir: string;
 
@@ -239,7 +245,7 @@ describe('Event Store', () => {
     });
   });
 
-  describe('SqliteEventStore', () => {
+  describe.skipIf(!hasNodeSqlite)('SqliteEventStore', () => {
     it('persists and retrieves events from SQLite database', async () => {
       const dbPath = path.join(tempDir, 'events.sqlite');
       const store = new SqliteEventStore(dbPath);

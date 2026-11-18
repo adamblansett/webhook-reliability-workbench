@@ -11,6 +11,10 @@ import { getProviderPreset } from '../signatures/presets.js';
 import { redactEventForDisplay } from '../security/redaction.js';
 import { replayWebhookEvent } from '../replay/engine.js';
 import { renderInspectorHtml } from './ui.js';
+import { evaluateChaos } from '../chaos/chaosSimulator.js';
+import { validateJsonSchema, loadSchemaFromFile } from '../schema/validator.js';
+import { startTunnel, type TunnelInstance } from '../tunnel/manager.js';
+import { TerminalDashboard } from '../tui/dashboard.js';
 
 export class ReceiverSecurityError extends Error {
   constructor(message: string) {
@@ -63,6 +67,9 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
   let serverInfo: ReceiverServerInfo | null = null;
   let isShuttingDown = false;
   const sseClients = new Set<http.ServerResponse>();
+  let activeSchema: Record<string, unknown> | null = options.schema ?? null;
+  let tunnelInstance: TunnelInstance | null = null;
+  let tuiDashboard: TerminalDashboard | null = null;
 
   // Preset configuration
   const preset = options.preset ? getProviderPreset(options.preset) : undefined;
@@ -353,10 +360,26 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
       );
     }
 
+    // Evaluate Chaos simulation
+    const chaos = evaluateChaos({
+      enabled: options.chaos,
+      failureRate: options.chaosFailureRate,
+      latencyP95Ms: options.chaosLatencyP95Ms,
+      dropRate: options.chaosDropRate,
+    });
+
+    if (chaos.shouldDrop) {
+      req.destroy();
+      return;
+    }
+
+    const effectiveResponseStatus = chaos.injectedStatus ?? responseStatus;
+    const effectiveDelayMs = delayMs + (chaos.injectedDelayMs ?? 0);
+
     // Delay simulation
-    if (delayMs > 0) {
+    if (effectiveDelayMs > 0) {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delayMs);
+        const timer = setTimeout(resolve, effectiveDelayMs);
         req.on('close', () => {
           clearTimeout(timer);
           resolve();
@@ -367,6 +390,17 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
     // Check if client disconnected during delay or response closed
     if (res.writableEnded || res.destroyed) {
       return;
+    }
+
+    // Schema Validation if schema configured
+    let schemaValidationResult = null;
+    if (activeSchema && parsedBody) {
+      const valRes = validateJsonSchema(parsedBody, activeSchema);
+      schemaValidationResult = {
+        valid: valRes.valid,
+        errors: valRes.errors,
+        schemaPath: options.schemaPath,
+      };
     }
 
     const durationMs = Date.now() - startTime;
@@ -385,14 +419,24 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
       jsonError,
       contentType: typeof contentType === 'string' ? contentType : null,
       contentLength: rawBuffer.length,
-      responseStatus,
+      responseStatus: effectiveResponseStatus,
       durationMs,
       signature: signatureResult,
       replays: [],
+      schemaValidation: schemaValidationResult,
+      chaosInjected: chaos.applyChaos
+        ? {
+            dropped: chaos.shouldDrop,
+            injectedStatus: chaos.injectedStatus,
+            injectedDelayMs: chaos.injectedDelayMs,
+            reason: chaos.reason,
+          }
+        : null,
     };
 
     try {
       await store.save(event);
+      tuiDashboard?.onNewEvent(event);
     } catch (saveErr) {
       if (!options.silent) {
         process.stderr.write(
@@ -463,7 +507,7 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
       ...customHeaders,
     };
 
-    res.writeHead(responseStatus, finalHeaders);
+    res.writeHead(effectiveResponseStatus, finalHeaders);
 
     const defaultResponseBody = JSON.stringify({
       status: 'received',
@@ -474,12 +518,15 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
     res.end(responseBody ?? defaultResponseBody);
 
     if (!options.silent) {
-      const statusColor = responseStatus >= 400 ? '!' : '✓';
+      const statusColor = effectiveResponseStatus >= 400 ? '!' : '✓';
       const sigNotice = signatureResult
         ? ` (Signature: ${signatureResult.valid ? 'VALID' : 'INVALID'})`
         : '';
+      const schemaNotice = schemaValidationResult
+        ? ` [Schema: ${schemaValidationResult.valid ? 'VALID' : 'INVALID'}]`
+        : '';
       process.stdout.write(
-        `[Workbench] ${statusColor} ${req.method} ${reqUrl.pathname} -> ${responseStatus} (${durationMs}ms) [ID: ${eventId}]${sigNotice}\n`,
+        `[Workbench] ${statusColor} ${req.method} ${reqUrl.pathname} -> ${effectiveResponseStatus} (${durationMs}ms) [ID: ${eventId}]${sigNotice}${schemaNotice}\n`,
       );
     }
   });
@@ -503,6 +550,46 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
           pid: process.pid,
         };
 
+        // Load schema from file if configured
+        if (options.schemaPath && !activeSchema) {
+          try {
+            activeSchema = await loadSchemaFromFile(options.schemaPath);
+            if (!options.silent) {
+              process.stdout.write(
+                `[Workbench] Loaded schema contract from "${options.schemaPath}"\n`,
+              );
+            }
+          } catch (err: unknown) {
+            if (!options.silent) {
+              process.stderr.write(
+                `[Workbench Warning] Could not load schema: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+            }
+          }
+        }
+
+        // Establish ephemeral ingress tunnel if configured
+        if (options.tunnel) {
+          try {
+            tunnelInstance = await startTunnel({
+              port: actualPort,
+              provider: options.tunnelProvider ?? 'auto',
+            });
+            serverInfo.tunnelUrl = tunnelInstance.url;
+            if (!options.silent) {
+              process.stdout.write(
+                `[Workbench Ingress] Public tunnel URL: ${tunnelInstance.url}\n`,
+              );
+            }
+          } catch (tunnelErr: unknown) {
+            if (!options.silent) {
+              process.stderr.write(
+                `[Workbench Ingress Warning] Failed to establish tunnel: ${tunnelErr instanceof Error ? tunnelErr.message : String(tunnelErr)}\n`,
+              );
+            }
+          }
+        }
+
         // Persist receiver state file for other CLI processes
         try {
           await fs.mkdir(path.dirname(stateFilePath), { recursive: true });
@@ -520,9 +607,27 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
           process.stdout.write(
             `[Workbench] Receiver listening on http://${host}:${actualPort}${webhookPath}\n`,
           );
+          if (serverInfo.tunnelUrl) {
+            process.stdout.write(
+              `[Workbench Ingress] Forwarding public traffic from: ${serverInfo.tunnelUrl}\n`,
+            );
+          }
           process.stdout.write(
             `[Workbench] Ready to capture incoming webhooks (PID: ${process.pid})\n`,
           );
+        }
+
+        // Launch Terminal UI if requested
+        if (options.tui) {
+          tuiDashboard = new TerminalDashboard({
+            port: actualPort,
+            host,
+            path: webhookPath,
+            tunnelUrl: serverInfo.tunnelUrl,
+            forwardUrl: options.forwardTo,
+            store,
+          });
+          await tuiDashboard.start();
         }
 
         resolve(serverInfo);
@@ -533,6 +638,20 @@ export function createReceiver(options: ReceiverOptions = {}): ReceiverInstance 
   const stop = async (): Promise<void> => {
     if (isShuttingDown) return;
     isShuttingDown = true;
+
+    if (tuiDashboard) {
+      tuiDashboard.stop();
+      tuiDashboard = null;
+    }
+
+    if (tunnelInstance) {
+      try {
+        await tunnelInstance.stop();
+      } catch {
+        // Ignore
+      }
+      tunnelInstance = null;
+    }
 
     for (const client of sseClients) {
       try {

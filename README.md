@@ -92,21 +92,26 @@ webhook-workbench [options] [command]
 
 ### Commands
 
-| Command                      | Description                                                         |
-| :--------------------------- | :------------------------------------------------------------------ |
-| `listen`                     | Start local receiver with optional proxy forwarding and web UI      |
-| `events list`                | List captured webhook events in store                               |
-| `events show <eventId>`      | Inspect detailed metadata and payload of an event                   |
-| `events diff <id1> <id2>`    | Compare two captured webhook events side-by-side                    |
-| `events tail`                | Stream live incoming webhook events via Server-Sent Events (SSE)    |
-| `events clear`               | Clear stored event history                                          |
-| `trigger <provider> <event>` | Generate and send synthetic provider webhooks or curl commands      |
-| `replay <eventId>`           | Replay a captured event to a destination URL                        |
-| `test-retries <eventId>`     | Test retry behavior and duplicate handling across multiple attempts |
-| `fixtures export <eventId>`  | Export a captured event as a portable JSON fixture file             |
-| `fixtures validate <file>`   | Validate a JSON fixture file against the Workbench schema           |
-| `fixtures import <file>`     | Import a fixture file as a captured event in local store            |
-| `config show`                | View resolved configuration and runtime defaults                    |
+| Command                      | Description                                                              |
+| :--------------------------- | :----------------------------------------------------------------------- |
+| `listen`                     | Start local receiver with tunneling, chaos simulation, web/TUI dashboard |
+| `events list`                | List captured webhook events in store                                    |
+| `events show <eventId>`      | Inspect detailed metadata and payload of an event                        |
+| `events diff <id1> <id2>`    | Compare two captured webhook events side-by-side                         |
+| `events tail`                | Stream live incoming webhook events via Server-Sent Events (SSE)         |
+| `events curl <eventId>`      | Generate executable cURL command line for a captured event               |
+| `events types <eventId>`     | Infer and generate TypeScript interfaces or Zod schemas from payload     |
+| `events validate <eventId>`  | Validate a captured event payload against a JSON Schema file             |
+| `events clear`               | Clear stored event history                                               |
+| `trigger <provider> <event>` | Generate and send synthetic provider webhooks or curl commands           |
+| `fuzz <eventId>`             | Run payload mutation stress testing against consumer endpoints           |
+| `test-suite <scenarioFile>`  | Run declarative webhook integration & idempotency scenario suites        |
+| `replay <eventId>`           | Replay a captured event to a destination URL                             |
+| `test-retries <eventId>`     | Test retry behavior and duplicate handling across multiple attempts      |
+| `fixtures export <eventId>`  | Export a captured event as a portable JSON fixture file                  |
+| `fixtures validate <file>`   | Validate a JSON fixture file against the Workbench schema                |
+| `fixtures import <file>`     | Import a fixture file as a captured event in local store                 |
+| `config show`                | View resolved configuration and runtime defaults                         |
 
 ---
 
@@ -284,9 +289,11 @@ Supported mock templates:
 
 - **Stripe**: `payment_intent.succeeded`, `charge.refunded`, `customer.subscription.created`
 - **GitHub**: `push`, `pull_request`, `ping`
-- **Shopify**: `orders/create`, `products/update`
-- **Slack**: `app_mention`, `url_verification`
-- **Svix**: `user.created`, `invoice.paid`
+- **Shopify**: `orders/create`
+- **Slack**: `app_mention`
+- **Svix**: `user.created`
+
+Run `webhook-workbench trigger --list` for the authoritative list.
 
 ---
 
@@ -297,7 +304,7 @@ Supported mock templates:
 Watch events arrive in real-time from your terminal:
 
 ```bash
-webhook-workbench events tail --url http://127.0.0.1:8787
+webhook-workbench events tail --url http://127.0.0.1:8787/__workbench/stream
 ```
 
 #### Event Diffing
@@ -312,21 +319,130 @@ Displays colorized, side-by-side or contextual diffs for header modifications, t
 
 ---
 
-### 6. Simulating Failures & Provider Retries
+### 6. Probabilistic Chaos Simulation & Ephemeral Ingress Tunnels
 
-Simulate upstream failures to test how webhook dispatchers handle errors and backoff:
+#### Chaos Injection
+
+Simulate real-world upstream network instability, tail latency, and transient failures probabilistically:
 
 ```bash
-# Simulate HTTP 500 Internal Server Error
-webhook-workbench listen --port 8787 --response-status 500 --response-body '{"error":"Service Unavailable"}'
+# Injected 25% failure rate, 3000ms p95 latency spikes, and 5% abrupt connection drops
+webhook-workbench listen \
+  --port 8787 \
+  --chaos \
+  --failure-rate 0.25 \
+  --latency-p95 3000 \
+  --drop-rate 0.05
+```
 
-# Simulate slow upstream response (2.5 second delay)
-webhook-workbench listen --port 8787 --delay-ms 2500
+#### Ephemeral Public Ingress Tunneling
+
+Expose your local workbench receiver to the public internet for webhook providers without manual port forwarding:
+
+```bash
+# Automatic Cloudflare Quick Tunnel (no account required)
+webhook-workbench listen --port 8787 --tunnel
+
+# Or explicitly select localtunnel
+webhook-workbench listen --port 8787 --tunnel localtunnel
+```
+
+#### Interactive Terminal Dashboard (TUI)
+
+Launch an interactive curses-style terminal UI:
+
+```bash
+webhook-workbench listen --port 8787 --tui
+```
+
+Navigate captured webhooks with arrow keys, press `r` to replay instantly to your app, `c` to copy cURL commands, and inspect payload and headers in real-time.
+
+---
+
+### 7. Code Generation & Contract Validation
+
+#### Generate Executable cURL Commands
+
+Extract any captured webhook event into a ready-to-run cURL command:
+
+```bash
+webhook-workbench events curl evt_m1abc9_48fa
+```
+
+#### Infer TypeScript & Zod Schemas
+
+Automatically infer clean TypeScript interface definitions or Zod validation schemas from captured payloads:
+
+```bash
+# Infer TypeScript interfaces
+webhook-workbench events types evt_m1abc9_48fa --format ts
+
+# Infer Zod schema
+webhook-workbench events types evt_m1abc9_48fa --format zod
+```
+
+#### JSON Schema & OpenAPI Contract Validation
+
+Validate captured payloads against a JSON Schema file:
+
+```bash
+webhook-workbench events validate evt_m1abc9_48fa --schema schemas/order-event.json
 ```
 
 ---
 
-### 7. Replaying Captured Events
+### 8. Payload Fuzzing & Consumer Resilience Testing
+
+Stress-test how your downstream webhook consumer handles malicious, unexpected, or mutated inputs:
+
+```bash
+webhook-workbench fuzz evt_m1abc9_48fa \
+  --url http://127.0.0.1:3000/api/webhooks \
+  --allow-loopback
+```
+
+Tests mutations including:
+
+- Empty payload and malformed JSON
+- Null byte injection and Unicode edge cases
+- Large nested payloads and integer boundary overflows
+- Header tampering and unknown extra fields
+
+Generates a resilience score and identifies unhandled server crashes (HTTP 500) vs safe input rejections (HTTP 400/422).
+
+---
+
+### 9. Declarative Integration Scenario Suites (CI/CD)
+
+Run reproducible, declarative webhook integration and idempotency test scenarios defined in YAML or JSON:
+
+```yaml
+# scenarios/payment-flow.yaml
+name: Payment Webhook Flow & Idempotency Test
+target: http://127.0.0.1:3000/api/webhooks
+steps:
+  - name: Initial payment succeeded
+    action: trigger
+    preset: stripe
+    event: payment_intent.succeeded
+    expect:
+      status: 200
+
+  - name: Duplicate delivery (idempotency test)
+    action: replay
+    expect:
+      status: 200
+```
+
+Run in CI pipelines:
+
+```bash
+webhook-workbench test-suite scenarios/payment-flow.yaml
+```
+
+---
+
+### 10. Replaying Captured Events
 
 Replay captured events to local application servers during development:
 
@@ -346,7 +462,7 @@ webhook-workbench replay evt_m1abc9_48fa \
 
 ---
 
-### 8. Retry Testing & Duplicate Delivery
+### 11. Retry Testing & Duplicate Delivery
 
 Verify that your application endpoint correctly handles duplicated webhooks and enforces idempotency:
 
@@ -380,7 +496,7 @@ Attempt #3 (after 1000ms delay): Status 200 [SUCCESS] (12ms)
 
 ---
 
-### 9. Portable Payload Fixtures
+### 12. Portable Payload Fixtures
 
 Export captured events into version-controlled fixture files for regression testing:
 
@@ -400,21 +516,25 @@ webhook-workbench fixtures import fixtures/order-created.json
 
 ---
 
-### 10. High-Performance SQLite Event Store
+### 13. SQLite Event Store (Library API)
 
-By default, Workbench stores events in memory or a JSON file. For high-volume load testing, durability, and fast indexed lookups, Workbench includes a native SQLite backend:
+The CLI uses the file-backed JSON store. When embedding Workbench as a library, you can opt into an indexed SQLite backend:
 
-```bash
-# Use SQLite event storage
-webhook-workbench listen --store-type sqlite --store-file .workbench/events.sqlite
+```ts
+import { createDefaultStore } from 'webhook-reliability-workbench';
+
+const store = createDefaultStore({
+  type: 'sqlite',
+  filePath: '.workbench/events.sqlite',
+});
 ```
 
 Features:
 
-- Backed by Node's built-in `node:sqlite` engine.
-- Indexed by event ID, timestamp, and insertion order.
-- Automatic FIFO capacity eviction when maximum event thresholds are reached.
-- Thread-safe persistence across concurrent listener and replay processes.
+- Backed by Node's built-in `node:sqlite` module (**requires Node.js ≥ 22.5**; `node:sqlite` is still marked experimental). On older runtimes it fails with a clear error — use the file or memory store instead.
+- Indexed by event ID and insertion order.
+- Automatic FIFO capacity eviction when the maximum event count is reached.
+- Not yet selectable from the CLI.
 
 ---
 
