@@ -309,7 +309,7 @@ describe('Security Safeguards', () => {
 
     it('resolves relative path safely against base directory', () => {
       const resolved = resolveSafePath('fixtures/my-test.json', '/tmp');
-      expect(resolved).toBe('/tmp/fixtures/my-test.json');
+      expect(resolved).toBe(path.resolve('/tmp', 'fixtures/my-test.json'));
     });
 
     it('rejects empty paths', () => {

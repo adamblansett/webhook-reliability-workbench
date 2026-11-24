@@ -3,9 +3,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { stripVTControlCharacters } from 'node:util';
 import { createProgram } from '../src/cli/index.js';
 import { FileEventStore } from '../src/events/store.js';
 import type { WebhookEvent } from '../src/events/types.js';
+
+const stripAnsi = stripVTControlCharacters;
 
 describe('CLI Commands Integration', () => {
   let tempDir: string;
@@ -114,8 +117,8 @@ describe('CLI Commands Integration', () => {
       storeFile,
     ]);
 
-    expect(stdoutOutput).toContain('evt_cli_list_1');
-    expect(stdoutOutput).toContain('POST /api/v1/webhook');
+    expect(stripAnsi(stdoutOutput)).toContain('evt_cli_list_1');
+    expect(stripAnsi(stdoutOutput)).toContain('POST /api/v1/webhook');
 
     // JSON output
     stdoutOutput = '';
@@ -154,9 +157,9 @@ describe('CLI Commands Integration', () => {
       storeFile,
     ]);
 
-    expect(stdoutOutput).toContain('=== Webhook Event: evt_cli_show_1 ===');
-    expect(stdoutOutput).toContain('HTTP Method:      POST');
-    expect(stdoutOutput).toContain('[REDACTED]');
+    expect(stripAnsi(stdoutOutput)).toContain('=== Webhook Event: evt_cli_show_1 ===');
+    expect(stripAnsi(stdoutOutput)).toContain('HTTP Method:      POST');
+    expect(stripAnsi(stdoutOutput)).toContain('[REDACTED]');
   });
 
   it('clears stored events with events clear', async () => {
@@ -175,7 +178,7 @@ describe('CLI Commands Integration', () => {
     ]);
 
     expect(await store.count()).toBe(0);
-    expect(stdoutOutput).toContain('Cleared all webhook events');
+    expect(stripAnsi(stdoutOutput)).toContain('Cleared all webhook events');
   });
 
   it('exports and validates payload fixtures via CLI', async () => {
@@ -199,7 +202,7 @@ describe('CLI Commands Integration', () => {
       storeFile,
     ]);
 
-    expect(stdoutOutput).toContain('Successfully exported event');
+    expect(stripAnsi(stdoutOutput)).toContain('Successfully exported event');
 
     // Validate fixture
     stdoutOutput = '';
@@ -213,7 +216,7 @@ describe('CLI Commands Integration', () => {
       fixtureFile,
     ]);
 
-    expect(stdoutOutput).toContain('Fixture is valid');
+    expect(stripAnsi(stdoutOutput)).toContain('Fixture is valid');
   });
 
   it('replays captured event via replay command to target server', async () => {
@@ -248,9 +251,9 @@ describe('CLI Commands Integration', () => {
         storeFile,
       ]);
 
-      expect(stdoutOutput).toContain('=== Webhook Replay Result ===');
-      expect(stdoutOutput).toContain('Outcome:');
-      expect(stdoutOutput).toContain('200 OK');
+      expect(stripAnsi(stdoutOutput)).toContain('=== Webhook Replay Result ===');
+      expect(stripAnsi(stdoutOutput)).toContain('Outcome:');
+      expect(stripAnsi(stdoutOutput)).toContain('200 OK');
     } finally {
       if (typeof targetServer.closeAllConnections === 'function') {
         targetServer.closeAllConnections();
@@ -295,10 +298,10 @@ describe('CLI Commands Integration', () => {
         storeFile,
       ]);
 
-      expect(stdoutOutput).toContain('=== Webhook Retry Test Summary ===');
-      expect(stdoutOutput).toContain('Total Attempts:');
-      expect(stdoutOutput).toContain('Attempt #1');
-      expect(stdoutOutput).toContain('Attempt #2');
+      expect(stripAnsi(stdoutOutput)).toContain('=== Webhook Retry Test Summary ===');
+      expect(stripAnsi(stdoutOutput)).toContain('Total Attempts:');
+      expect(stripAnsi(stdoutOutput)).toContain('Attempt #1');
+      expect(stripAnsi(stdoutOutput)).toContain('Attempt #2');
     } finally {
       if (typeof targetServer.closeAllConnections === 'function') {
         targetServer.closeAllConnections();
