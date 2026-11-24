@@ -12,8 +12,8 @@ export const WebhookFixtureSchema = z.object({
   request: z.object({
     method: z.string().min(1),
     path: z.string().min(1),
-    headers: z.record(z.union([z.string(), z.array(z.string())])),
-    query: z.record(z.union([z.string(), z.array(z.string())])),
+    headers: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+    query: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
     contentType: z.string().nullable(),
     contentLength: z.number().nonnegative(),
     rawBody: z.string(),

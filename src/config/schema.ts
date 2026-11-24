@@ -20,14 +20,14 @@ export const WorkbenchConfigSchema = z.object({
       delayMs: z.number().int().min(0).max(LIMITS.MAX_DELAY_MS).default(0),
       responseBody: z.string().optional(),
     })
-    .default({}),
+    .prefault({}),
   signatures: z
     .object({
       headerName: z.string().default('x-hub-signature-256'),
       algorithm: z.enum(['sha256', 'sha512', 'sha1']).default('sha256'),
       prefix: z.string().optional(),
     })
-    .default({}),
+    .prefault({}),
   replay: z
     .object({
       timeoutMs: z
@@ -45,7 +45,7 @@ export const WorkbenchConfigSchema = z.object({
       allowLoopback: z.boolean().default(false),
       allowPrivate: z.boolean().default(false),
     })
-    .default({}),
+    .prefault({}),
   store: z
     .object({
       type: z.enum(['memory', 'file']).default('file'),
@@ -57,7 +57,7 @@ export const WorkbenchConfigSchema = z.object({
         .max(LIMITS.MAX_STORE_CAPACITY)
         .default(LIMITS.DEFAULT_STORE_MAX_EVENTS),
     })
-    .default({}),
+    .prefault({}),
 });
 
 export type WorkbenchConfig = z.infer<typeof WorkbenchConfigSchema>;
